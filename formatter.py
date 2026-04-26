@@ -83,3 +83,59 @@ def format_status_notification(message: str, color: str = "green") -> dict:
         },
     }
     return card
+
+
+def format_tool_use_notification(tools) -> dict:
+    """Create a purple notification card for tool usage.
+
+    Args:
+        tools: List of dicts with keys 'name' and 'input_summary'
+
+    Returns:
+        Feishu interactive card message dict
+    """
+    from typing import Dict, List
+    from collections import Counter
+
+    # Count tool uses by name
+    tool_counts = Counter(tool["name"] for tool in tools)
+
+    # Build markdown content
+    lines = []
+    lines.append("**Tools Used:**\n")
+
+    # Track which tools we've already displayed
+    seen_tools = set()
+
+    for tool in tools:
+        tool_name = tool["name"]
+
+        # Skip if we've already shown this tool
+        if tool_name in seen_tools:
+            continue
+        seen_tools.add(tool_name)
+
+        count = tool_counts[tool_name]
+        input_summary = tool["input_summary"][:200]  # Truncate to 200 chars
+
+        # Format with count if > 1
+        if count > 1:
+            lines.append(f"- `{tool_name}` × {count}")
+        else:
+            lines.append(f"- `{tool_name}`: {input_summary}")
+
+    content = "\n".join(lines)
+
+    card = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": "Tools Running"},
+                "template": "purple",
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+            ],
+        },
+    }
+    return card
