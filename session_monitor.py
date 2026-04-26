@@ -3,7 +3,7 @@ import os
 import time
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, List, Dict
 
 # Claude Code stores sessions at:
 # ~/.claude/projects/{project-slug}/{session-uuid}.jsonl
@@ -38,11 +38,13 @@ class SessionMonitor:
     def __init__(
         self,
         jsonl_path: Path,
-        on_assistant_message: Callable[[list], None],
+        on_text_message: Callable[[List[str]], None],
+        on_tool_use: Callable[[List[Dict[str, str]]], None],
         poll_interval: float = 2.0,
     ):
         self.jsonl_path = jsonl_path
-        self.on_assistant_message = on_assistant_message
+        self.on_text_message = on_text_message
+        self.on_tool_use = on_tool_use
         self.poll_interval = poll_interval
         self._offset = 0
         self._stop = threading.Event()
@@ -91,9 +93,37 @@ class SessionMonitor:
 
             if entry.get("type") == "assistant":
                 content = entry.get("message", {}).get("content", [])
-                # Extract text blocks only (skip thinking, tool_use, tool_result)
+
+                # Extract text blocks
                 text_blocks = [
                     c["text"] for c in content if c.get("type") == "text" and c.get("text")
                 ]
+
+                # Extract tool_use blocks
+                tool_uses = []
+                for c in content:
+                    if c.get("type") == "tool_use":
+                        name = c.get("name", "unknown")
+                        input_data = c.get("input", {})
+
+                        # Build input_summary from first 3 keys, truncate each to 100 chars
+                        input_parts = []
+                        for key in list(input_data.keys())[:3]:
+                            value = str(input_data[key])
+                            if len(value) > 100:
+                                value = value[:97] + "..."
+                            input_parts.append(f"{key}={value}")
+
+                        input_summary = ", ".join(input_parts) if input_parts else "(no input)"
+
+                        tool_uses.append({
+                            "name": name,
+                            "input_summary": input_summary
+                        })
+
+                # Fire callbacks: tool_use BEFORE text (shows activity first, then result)
+                if tool_uses:
+                    self.on_tool_use(tool_uses)
+
                 if text_blocks:
-                    self.on_assistant_message(text_blocks)
+                    self.on_text_message(text_blocks)
