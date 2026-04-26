@@ -35,13 +35,13 @@ class FeishuClient:
         )
 
         # Card action handler
-        card_handler = lark.CardActionHandler.builder("").register(self._handle_card).build()
+        card_handler = lark.CardActionHandler.builder("", "").register(self._handle_card).build()
 
         # Build client with WebSocket mode
         self.client = lark.Client.builder().app_id(app_id).app_secret(app_secret).build()
 
         self.ws_client = (
-            lark.ws.Client(app_id, app_secret, event_handler=event_handler, card_handler=card_handler)
+            lark.ws.Client(app_id, app_secret, event_handler=event_handler)
         )
 
     def start(self):

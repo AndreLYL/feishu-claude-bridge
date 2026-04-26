@@ -1,13 +1,14 @@
 import json
 import threading
 import logging
+from typing import Dict, Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 logger = logging.getLogger("bridge.hook")
 
 # Stores pending permission requests: {request_id: threading.Event}
-_pending: dict[str, threading.Event] = {}
-_results: dict[str, str] = {}  # {request_id: "allow" | "deny"}
+_pending: Dict[str, threading.Event] = {}
+_results: Dict[str, str] = {}  # {request_id: "allow" | "deny"}
 _lock = threading.Lock()
 
 
@@ -29,7 +30,7 @@ def resolve_permission(request_id: str, action: str) -> None:
         event.set()
 
 
-def get_result(request_id: str) -> str | None:
+def get_result(request_id: str) -> Optional[str]:
     """Get the result of a resolved request."""
     with _lock:
         return _results.pop(request_id, None)

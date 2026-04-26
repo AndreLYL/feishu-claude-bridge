@@ -6,7 +6,7 @@ MAX_TEXT_LENGTH = 4000
 TRUNCATION_NOTICE = "\n\n---\n*（输出过长，已截断。发 /screenshot 查看完整终端）*"
 
 
-def format_assistant_reply(text_blocks: list[str]) -> dict:
+def format_assistant_reply(text_blocks) -> dict:
     """Convert assistant text blocks to a Feishu card message."""
     combined = "\n\n".join(text_blocks)
 

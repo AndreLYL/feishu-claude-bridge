@@ -14,6 +14,7 @@ import os
 import signal
 import sys
 import threading
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -37,7 +38,7 @@ logger = logging.getLogger("bridge")
 
 
 class Bridge:
-    def __init__(self, tmux_session: str, tmux_window: Optional[str] = None):
+    def __init__(self, tmux_session: str, tmux_window: Optional[str] = None, session_file: Optional[str] = None):
         self.tmux = TmuxController(tmux_session, tmux_window)
 
         # Feishu client
@@ -50,8 +51,11 @@ class Bridge:
         )
 
         # Find active session JSONL
-        jsonl_path = find_latest_session()
-        if not jsonl_path:
+        if session_file:
+            jsonl_path = Path(session_file)
+        else:
+            jsonl_path = find_latest_session()
+        if not jsonl_path or not jsonl_path.exists():
             logger.error("No active Claude Code session found")
             sys.exit(1)
         logger.info(f"Monitoring session: {jsonl_path.name}")
@@ -115,7 +119,7 @@ class Bridge:
             logger.info(f"Permission {action}: {request_id}")
             resolve_permission(request_id, action)
 
-    def _handle_assistant_message(self, text_blocks: list[str]):
+    def _handle_assistant_message(self, text_blocks):
         """Handle new assistant message from JSONL monitor."""
         card = format_assistant_reply(text_blocks)
         self.feishu.send_card(card)
@@ -125,9 +129,10 @@ def main():
     parser = argparse.ArgumentParser(description="Feishu ↔ Claude Code Bridge")
     parser.add_argument("--tmux-session", required=True, help="tmux session name")
     parser.add_argument("--tmux-window", default=None, help="tmux window index/name")
+    parser.add_argument("--session-file", default=None, help="Path to Claude Code session JSONL file")
     args = parser.parse_args()
 
-    bridge = Bridge(args.tmux_session, args.tmux_window)
+    bridge = Bridge(args.tmux_session, args.tmux_window, args.session_file)
 
     def shutdown(sig, frame):
         logger.info("Shutting down...")

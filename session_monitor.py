@@ -17,7 +17,7 @@ def find_latest_session(project_slug: Optional[str] = None) -> Optional[Path]:
     else:
         search_dirs = [d for d in CLAUDE_PROJECTS_DIR.iterdir() if d.is_dir()]
 
-    latest: Path | None = None
+    latest: Optional[Path] = None
     latest_mtime = 0.0
 
     for d in search_dirs:
