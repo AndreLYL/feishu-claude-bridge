@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# One-command Claude Code + Feishu bridge startup.
+#
+# Usage:
+#   claude-bridge start          # Start tmux + claude + bridge
+#   claude-bridge attach         # Attach to existing tmux session
+#   claude-bridge bridge-only    # Start bridge for existing tmux session
+
+set -euo pipefail
+
+BRIDGE_DIR="$(cd "$(dirname "$0")" && pwd)"
+TMUX_SESSION="${CLAUDE_BRIDGE_TMUX_SESSION:-claude}"
+VENV="${BRIDGE_DIR}/.venv"
+
+case "${1:-start}" in
+  start)
+    # Create tmux session with Claude Code if it doesn't exist
+    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+      echo "Starting tmux session '${TMUX_SESSION}' with Claude Code..."
+      tmux new-session -d -s "$TMUX_SESSION"
+      tmux send-keys -t "$TMUX_SESSION" "claude" Enter
+      sleep 3  # Wait for Claude to initialize
+    else
+      echo "tmux session '${TMUX_SESSION}' already exists."
+    fi
+
+    # Start bridge
+    echo "Starting Feishu bridge..."
+    source "${VENV}/bin/activate"
+    python3 "${BRIDGE_DIR}/bridge.py" --tmux-session "$TMUX_SESSION"
+    ;;
+
+  attach)
+    tmux attach-session -t "$TMUX_SESSION"
+    ;;
+
+  bridge-only)
+    source "${VENV}/bin/activate"
+    python3 "${BRIDGE_DIR}/bridge.py" --tmux-session "$TMUX_SESSION"
+    ;;
+
+  *)
+    echo "Usage: claude-bridge {start|attach|bridge-only}"
+    exit 1
+    ;;
+esac
