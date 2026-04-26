@@ -14,8 +14,9 @@ import os
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -23,7 +24,9 @@ from feishu_client import FeishuClient
 from formatter import (
     format_assistant_reply,
     format_permission_request,
+    format_selection_menu,
     format_status_notification,
+    format_tool_use_notification,
 )
 from hook_server import resolve_permission, start_hook_server
 from session_monitor import SessionMonitor, find_latest_session
@@ -35,6 +38,10 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 logger = logging.getLogger("bridge")
+
+# State constants
+STATE_IDLE = "idle"
+STATE_WAITING_SELECTION = "waiting_selection"
 
 
 class Bridge:
@@ -63,10 +70,16 @@ class Bridge:
         # Session monitor
         self.monitor = SessionMonitor(
             jsonl_path=jsonl_path,
-            on_assistant_message=self._handle_assistant_message,
+            on_text_message=self._handle_text_message,
+            on_tool_use=self._handle_tool_use,
         )
 
         self.hook_port = int(os.environ.get("HOOK_SERVER_PORT", "19280"))
+
+        # State machine for menu detection
+        self._state = STATE_IDLE
+        self._menu_options = []
+        self._menu_lock = threading.Lock()
 
     def start(self):
         # Verify tmux is alive
@@ -99,8 +112,37 @@ class Bridge:
         """Handle text message from Feishu."""
         logger.info(f"Feishu → tmux: {text[:80]}")
 
+        # Check if we're waiting for menu selection
+        with self._menu_lock:
+            if self._state == STATE_WAITING_SELECTION:
+                # Try to parse as a digit
+                if text.isdigit():
+                    idx = int(text)
+                    if 0 <= idx < len(self._menu_options):
+                        logger.info(f"Selecting menu option {idx}: {self._menu_options[idx]}")
+                        self.tmux.select_option(idx)
+                        # Reset state
+                        self._state = STATE_IDLE
+                        self._menu_options = []
+                        return
+                    else:
+                        logger.warning(f"Invalid selection {idx}, valid range: 0-{len(self._menu_options)-1}")
+
+                # Not a valid digit or "Other" option — reset state and handle as text
+                logger.info("Non-numeric input during menu state, resetting and sending as text")
+                self._state = STATE_IDLE
+                self._menu_options = []
+                # Send Escape to exit menu, then the text
+                self.tmux.send_key("Escape")
+                time.sleep(0.3)
+                self.tmux.send_text(text)
+                return
+
         # Handle bridge commands
         if text == "/esc":
+            with self._menu_lock:
+                self._state = STATE_IDLE
+                self._menu_options = []
             self.tmux.send_key("Escape")
             return
         if text == "/screenshot":
@@ -119,10 +161,40 @@ class Bridge:
             logger.info(f"Permission {action}: {request_id}")
             resolve_permission(request_id, action)
 
-    def _handle_assistant_message(self, text_blocks):
-        """Handle new assistant message from JSONL monitor."""
+    def _handle_text_message(self, text_blocks: List[str]):
+        """Handle new assistant text message from JSONL monitor."""
         card = format_assistant_reply(text_blocks)
         self.feishu.send_card(card)
+        # Schedule menu detection after sending reply
+        self._schedule_menu_detection()
+
+    def _handle_tool_use(self, tools: List[Dict[str, str]]):
+        """Handle tool use notification from JSONL monitor."""
+        card = format_tool_use_notification(tools)
+        self.feishu.send_card(card)
+
+    def _schedule_menu_detection(self):
+        """Start background thread to detect selection menus."""
+        def detect_menu():
+            # Wait 2s for menu to appear
+            time.sleep(2.0)
+            # Poll up to 5 times
+            for attempt in range(5):
+                menu_data = self.tmux.detect_selection_menu()
+                if menu_data and menu_data.get("is_menu"):
+                    logger.info(f"Menu detected: {len(menu_data['options'])} options")
+                    with self._menu_lock:
+                        self._state = STATE_WAITING_SELECTION
+                        self._menu_options = menu_data["options"]
+                    # Send selection menu card
+                    card = format_selection_menu(menu_data["options"])
+                    self.feishu.send_card(card)
+                    break
+                if attempt < 4:
+                    time.sleep(2.0)
+
+        thread = threading.Thread(target=detect_menu, daemon=True)
+        thread.start()
 
 
 def main():
