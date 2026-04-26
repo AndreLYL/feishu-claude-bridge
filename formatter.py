@@ -139,3 +139,38 @@ def format_tool_use_notification(tools) -> dict:
         },
     }
     return card
+
+
+def format_selection_menu(options) -> dict:
+    """Create a yellow selection menu card with numbered options.
+
+    Args:
+        options: List of option strings to display
+
+    Returns:
+        Feishu interactive card message dict with yellow header
+    """
+    # Build numbered list
+    lines = []
+    for idx, option in enumerate(options, start=1):
+        lines.append(f"{idx}. {option}")
+
+    # Add instructions footer
+    if lines:
+        content = "\n".join(lines) + "\n\n---\n回复数字选择，发 /esc 取消"
+    else:
+        content = "回复数字选择，发 /esc 取消"
+
+    card = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": "Select Option"},
+                "template": "yellow",
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+            ],
+        },
+    }
+    return card
