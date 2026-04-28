@@ -1,5 +1,11 @@
 import pytest
-from formatter import format_tool_use_notification, format_selection_menu
+from formatter import (
+    format_tool_use_notification,
+    format_selection_menu,
+    format_thinking_notification,
+    format_heartbeat,
+    format_permission_request,
+)
 
 
 def test_single_tool_use():
@@ -48,3 +54,35 @@ def test_selection_menu_empty():
     card = format_selection_menu([])
     content = card["card"]["elements"][0]["content"]
     assert "回复数字选择" in content
+
+
+def test_format_thinking_truncates_at_200():
+    text = "x" * 300
+    card = format_thinking_notification(text)
+    content = card["card"]["elements"][0]["content"]
+    assert len(content) <= 210
+    assert card["card"]["header"]["template"] == "grey"
+    assert "Thinking" in card["card"]["header"]["title"]["content"]
+
+
+def test_format_thinking_short_text():
+    card = format_thinking_notification("analyzing the code")
+    content = card["card"]["elements"][0]["content"]
+    assert content == "analyzing the code"
+
+
+def test_format_heartbeat():
+    card = format_heartbeat(12)
+    content = card["card"]["elements"][0]["content"]
+    assert "12s" in content
+    assert card["card"]["header"]["template"] == "grey"
+
+
+def test_format_permission_request_no_buttons():
+    card = format_permission_request("Bash", "command=git push", "req-123")
+    elements = card["card"]["elements"]
+    for el in elements:
+        assert el["tag"] != "action", "Permission card should not have buttons in V2"
+    content = elements[0]["content"]
+    assert "y" in content.lower()
+    assert "Bash" in content

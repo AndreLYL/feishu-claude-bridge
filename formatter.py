@@ -31,8 +31,43 @@ def format_assistant_reply(text_blocks) -> dict:
     return card
 
 
+def format_thinking_notification(thinking_text: str) -> dict:
+    """Grey card showing truncated thinking content."""
+    if len(thinking_text) > 200:
+        thinking_text = thinking_text[:200] + "..."
+
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": "Thinking..."},
+                "template": "grey",
+            },
+            "elements": [
+                {"tag": "markdown", "content": thinking_text},
+            ],
+        },
+    }
+
+
+def format_heartbeat(elapsed_seconds: int) -> dict:
+    """Grey card showing working status with elapsed time."""
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": "Working..."},
+                "template": "grey",
+            },
+            "elements": [
+                {"tag": "markdown", "content": f"Claude is working... ({elapsed_seconds}s)"},
+            ],
+        },
+    }
+
+
 def format_permission_request(tool_name: str, tool_input_summary: str, request_id: str) -> dict:
-    """Create an interactive card with Allow/Deny buttons for permission."""
+    """Permission request card — text-based reply (no buttons, WebSocket doesn't support card callbacks)."""
     card = {
         "msg_type": "interactive",
         "card": {
@@ -43,24 +78,11 @@ def format_permission_request(tool_name: str, tool_input_summary: str, request_i
             "elements": [
                 {
                     "tag": "markdown",
-                    "content": f"**Tool:** `{tool_name}`\n**Input:** {tool_input_summary[:500]}",
-                },
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "Allow"},
-                            "type": "primary",
-                            "value": json.dumps({"action": "allow", "id": request_id}),
-                        },
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "Deny"},
-                            "type": "danger",
-                            "value": json.dumps({"action": "deny", "id": request_id}),
-                        },
-                    ],
+                    "content": (
+                        f"**Tool:** `{tool_name}`\n"
+                        f"**Input:** {tool_input_summary[:500]}\n\n"
+                        f"回复 **y** 允许，**n** 拒绝"
+                    ),
                 },
             ],
         },

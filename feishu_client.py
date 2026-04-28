@@ -1,11 +1,13 @@
 import json
 import logging
-from typing import Callable
+from typing import Callable, Optional
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
     P2ImMessageReceiveV1,
 )
 
@@ -49,8 +51,8 @@ class FeishuClient:
         logger.info("Connecting to Feishu WebSocket...")
         self.ws_client.start()
 
-    def send_card(self, card: dict) -> None:
-        """Send an interactive card message to the allowed chat."""
+    def send_card(self, card: dict) -> Optional[str]:
+        """Send an interactive card message. Returns message_id on success, None on failure."""
         body = CreateMessageRequestBody.builder() \
             .msg_type("interactive") \
             .receive_id(self.allowed_chat_id) \
@@ -65,6 +67,25 @@ class FeishuClient:
         response = self.client.im.v1.message.create(request)
         if not response.success():
             logger.error(f"Send failed: {response.code} {response.msg}")
+            return None
+        return response.data.message_id
+
+    def update_card(self, message_id: str, card: dict) -> bool:
+        """PATCH update an already-sent card. Returns True on success."""
+        body = PatchMessageRequestBody.builder() \
+            .content(json.dumps(card)) \
+            .build()
+
+        request = PatchMessageRequest.builder() \
+            .message_id(message_id) \
+            .request_body(body) \
+            .build()
+
+        response = self.client.im.v1.message.patch(request)
+        if not response.success():
+            logger.error(f"Card update failed: {response.code} {response.msg}")
+            return False
+        return True
 
     def send_text(self, text: str) -> None:
         """Send a plain text message."""
