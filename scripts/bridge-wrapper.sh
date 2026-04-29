@@ -2,7 +2,8 @@
 # Wrapper script for launchd — loads .env and starts bridge
 set -euo pipefail
 
-cd /Users/yinglong.li/feishu-claude-bridge
+BRIDGE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$BRIDGE_DIR"
 
 # Load .env
 if [ -f .env ]; then
@@ -11,4 +12,4 @@ if [ -f .env ]; then
     set +a
 fi
 
-exec /Users/yinglong.li/feishu-claude-bridge/.venv/bin/python bridge.py --tmux-session claude
+exec "${BRIDGE_DIR}/.venv/bin/python" bridge.py --tmux-session "${CLAUDE_BRIDGE_TMUX_SESSION:-claude}"
