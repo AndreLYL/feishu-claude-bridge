@@ -75,6 +75,17 @@ class TmuxController:
         pane_text = self.capture_pane(50)
         return parse_selection_menu(pane_text)
 
+    def get_pane_cwd(self) -> Optional[str]:
+        """Get the current working directory of the tmux pane."""
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", self._target, "-p", "#{pane_current_path}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+        return None
+
     def select_option(self, target_index: int, current_index: int = 0) -> None:
         """Navigate to and select a menu option by index.
         Resets to top, moves down target_index times, confirms with Enter."""
