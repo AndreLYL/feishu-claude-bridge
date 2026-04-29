@@ -38,7 +38,7 @@ Feishu App ←(WebSocket)→ Bridge ←(tmux send-keys / JSONL)→ Claude Code C
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/anthropics/feishu-claude-bridge.git
+git clone https://github.com/AndreLYL/feishu-claude-bridge.git
 cd feishu-claude-bridge
 python3 -m venv .venv
 source .venv/bin/activate
