@@ -89,6 +89,7 @@ class Bridge:
             allowed_chat_id=os.environ["ALLOWED_CHAT_ID"],
             on_message=self._handle_feishu_message,
             on_card_action=self._handle_card_action,
+            on_image=self._handle_feishu_image,
         )
 
         # Find active session JSONL
@@ -117,6 +118,7 @@ class Bridge:
             on_tool_use=self._handle_tool_use,
             on_thinking=self._handle_thinking,
             on_heartbeat=self._handle_heartbeat,
+            on_turn_end=self._handle_turn_end,
         )
 
         self.hook_port = int(os.environ.get("HOOK_SERVER_PORT", "19280"))
@@ -127,6 +129,7 @@ class Bridge:
         self._menu_lock = threading.Lock()
         self._pending_permission_id: Optional[str] = None
         self._heartbeat_start: Optional[float] = None
+        self._accumulated_text: List[str] = []
 
     def start(self):
         # Verify tmux is alive
@@ -168,6 +171,10 @@ class Bridge:
         """Handle text message from Feishu."""
         try:
             logger.info(f"Feishu → tmux: {text[:80]}")
+
+            # Finalize previous card before new user message
+            self.card_manager.finalize()
+            self._accumulated_text.clear()
 
             with self._menu_lock:
                 # Permission reply
@@ -222,6 +229,16 @@ class Bridge:
         except Exception as e:
             logger.error(f"Error handling Feishu message: {e}", exc_info=True)
 
+    def _handle_feishu_image(self, image_path: str):
+        """Handle image message from Feishu — download and send path to Claude."""
+        try:
+            logger.info(f"Feishu image → tmux: {image_path}")
+            self.card_manager.finalize()
+            self._accumulated_text.clear()
+            self.tmux.send_text(f"请看这张图片：{image_path}")
+        except Exception as e:
+            logger.error(f"Error handling image: {e}", exc_info=True)
+
     def _handle_card_action(self, value: dict):
         """Handle Feishu card button click (Allow/Deny)."""
         try:
@@ -237,9 +254,10 @@ class Bridge:
         """Handle new assistant text message from JSONL monitor."""
         try:
             self._heartbeat_start = None
-            card = format_assistant_reply(text_blocks)
+            self._accumulated_text.extend(text_blocks)
+            card = format_assistant_reply(self._accumulated_text)
             self.card_manager.send_or_update(card)
-            self.card_manager.finalize()
+            # Do NOT finalize here — wait for on_turn_end (next human message)
             self._schedule_menu_detection()
         except Exception as e:
             logger.error(f"Error handling text message: {e}", exc_info=True)
@@ -270,6 +288,15 @@ class Bridge:
             self.card_manager.send_or_update(card)
         except Exception as e:
             logger.error(f"Error handling heartbeat: {e}", exc_info=True)
+
+    def _handle_turn_end(self):
+        """Handle turn boundary — human message appeared, finalize the card."""
+        try:
+            self.card_manager.finalize()
+            self._heartbeat_start = None
+            self._accumulated_text.clear()
+        except Exception as e:
+            logger.error(f"Error handling turn end: {e}", exc_info=True)
 
     def _schedule_menu_detection(self):
         """Start background thread to detect selection menus."""

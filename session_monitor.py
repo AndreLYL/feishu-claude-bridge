@@ -84,6 +84,7 @@ class SessionMonitor:
         on_tool_use: Callable[[List[Dict[str, str]]], None],
         on_thinking: Optional[Callable[[str], None]] = None,
         on_heartbeat: Optional[Callable[[], None]] = None,
+        on_turn_end: Optional[Callable[[], None]] = None,
         poll_interval: float = 1.0,
         stale_threshold: float = 30.0,
     ):
@@ -92,6 +93,7 @@ class SessionMonitor:
         self.on_tool_use = on_tool_use
         self.on_thinking = on_thinking
         self.on_heartbeat = on_heartbeat
+        self.on_turn_end = on_turn_end
         self.poll_interval = poll_interval
         self._stale_threshold = stale_threshold
         self._project_dir = jsonl_path.parent
@@ -145,6 +147,11 @@ class SessionMonitor:
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
+                continue
+
+            if entry.get("type") in ("human", "user"):
+                if self.on_turn_end:
+                    self.on_turn_end()
                 continue
 
             if entry.get("type") == "assistant":
@@ -217,5 +224,5 @@ class SessionMonitor:
             logger.info(f"Auto-switched to {latest.name}")
             self._known_files.add(latest.name)
             self.jsonl_path = latest
-            self._offset = 0
+            self._offset = latest.stat().st_size  # seek to end — only monitor NEW data
             self._last_data_time = time.time()

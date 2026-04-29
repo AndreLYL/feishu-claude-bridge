@@ -1,11 +1,14 @@
 import json
 import logging
+import os
+from pathlib import Path
 from typing import Callable, Optional
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
+    GetMessageResourceRequest,
     PatchMessageRequest,
     PatchMessageRequestBody,
     P2ImMessageReceiveV1,
@@ -22,12 +25,17 @@ class FeishuClient:
         allowed_chat_id: str,
         on_message: Callable[[str], None],
         on_card_action: Callable[[dict], None],
+        on_image: Optional[Callable[[str], None]] = None,
+        image_dir: Optional[str] = None,
     ):
         self.app_id = app_id
         self.app_secret = app_secret
         self.allowed_chat_id = allowed_chat_id
         self.on_message = on_message
         self.on_card_action = on_card_action
+        self.on_image = on_image
+        self._image_dir = Path(image_dir or "/tmp/feishu-bridge-images")
+        self._image_dir.mkdir(parents=True, exist_ok=True)
 
         # Build event handler
         event_handler = (
@@ -121,6 +129,35 @@ class FeishuClient:
             text = content.get("text", "").strip()
             if text:
                 self.on_message(text)
+        elif msg.message_type == "image" and self.on_image:
+            content = json.loads(msg.content)
+            image_key = content.get("image_key", "")
+            if image_key:
+                local_path = self._download_image(msg.message_id, image_key)
+                if local_path:
+                    self.on_image(local_path)
+
+    def _download_image(self, message_id: str, image_key: str) -> Optional[str]:
+        """Download image from Feishu and save locally. Returns local file path."""
+        try:
+            request = GetMessageResourceRequest.builder() \
+                .message_id(message_id) \
+                .file_key(image_key) \
+                .type("image") \
+                .build()
+            response = self.client.im.v1.message_resource.get(request)
+            if not response.success():
+                logger.error(f"Image download failed: {response.code} {response.msg}")
+                return None
+
+            local_path = self._image_dir / f"{image_key}.png"
+            with open(local_path, "wb") as f:
+                f.write(response.file.read())
+            logger.info(f"Image saved: {local_path}")
+            return str(local_path)
+        except Exception as e:
+            logger.error(f"Image download error: {e}", exc_info=True)
+            return None
 
     def _handle_card(self, data) -> None:
         """Handle card action (button clicks)."""
