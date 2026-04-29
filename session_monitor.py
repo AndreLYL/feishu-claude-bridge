@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import time
 import threading
 from pathlib import Path
@@ -39,7 +38,7 @@ def cwd_to_project_slug(cwd: str) -> str:
     """Convert an absolute path to Claude Code's project slug format.
 
     Claude Code replaces '/' and '.' with '-' in the path.
-    e.g. /Users/yinglong.li → -Users-yinglong-li
+    e.g. /Users/john/project → -Users-john-project
     """
     return cwd.replace("/", "-").replace(".", "-")
 
