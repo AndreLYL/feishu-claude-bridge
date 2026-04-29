@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .venv/
 logs/
+.pytest_cache/
+.superpowers/
+sprint-contract.yaml
