@@ -98,7 +98,7 @@ class SessionMonitor:
         self._project_dir = jsonl_path.parent
         self._offset = 0
         self._last_data_time = time.time()
-        self._known_files: set = {jsonl_path.name}
+
         self._stop = threading.Event()
 
     def start(self) -> threading.Thread:
@@ -206,13 +206,12 @@ class SessionMonitor:
         if not self._project_dir.exists():
             return
 
+        # Find the most recently modified JSONL in the project dir
         latest = None
         latest_mtime = 0.0
 
         for f in self._project_dir.glob("*.jsonl"):
             if f.name == "history.jsonl":
-                continue
-            if f.name in self._known_files:
                 continue
             mtime = f.stat().st_mtime
             if mtime > latest_mtime:
@@ -221,7 +220,6 @@ class SessionMonitor:
 
         if latest and latest != self.jsonl_path:
             logger.info(f"Auto-switched to {latest.name}")
-            self._known_files.add(latest.name)
             self.jsonl_path = latest
             self._offset = latest.stat().st_size  # seek to end — only monitor NEW data
             self._last_data_time = time.time()

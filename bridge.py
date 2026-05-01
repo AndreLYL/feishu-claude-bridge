@@ -225,6 +225,7 @@ class Bridge:
                 self.feishu.send_text(f"```\n{screenshot}\n```")
                 return
 
+            self._ensure_claude_running()
             self.tmux.send_text(text)
         except Exception as e:
             logger.error(f"Error handling Feishu message: {e}", exc_info=True)
@@ -235,6 +236,7 @@ class Bridge:
             logger.info(f"Feishu image → tmux: {image_path}")
             self.card_manager.finalize()
             self._accumulated_text.clear()
+            self._ensure_claude_running()
             self.tmux.send_text(f"请看这张图片：{image_path}")
         except Exception as e:
             logger.error(f"Error handling image: {e}", exc_info=True)
@@ -267,6 +269,8 @@ class Bridge:
         try:
             card = format_tool_use_notification(tools)
             self.card_manager.send_standalone(card)
+            # Tool use may trigger permission menus (Edit/Bash/Write confirmation)
+            self._schedule_menu_detection()
         except Exception as e:
             logger.error(f"Error handling tool use: {e}", exc_info=True)
 
@@ -297,6 +301,29 @@ class Bridge:
             self._accumulated_text.clear()
         except Exception as e:
             logger.error(f"Error handling turn end: {e}", exc_info=True)
+
+    def _ensure_claude_running(self):
+        """Check if Claude Code is running in tmux; if not, auto-resume."""
+        if self.tmux.is_claude_running():
+            return
+        logger.warning("Claude Code not running — auto-resuming")
+        self.feishu.send_card(
+            format_status_notification("Claude Code exited, auto-resuming...", "yellow")
+        )
+        self.tmux.restart_claude(resume=True)
+        # Wait for Claude to start up
+        for _ in range(15):
+            time.sleep(2)
+            if self.tmux.is_claude_running():
+                logger.info("Claude Code resumed successfully")
+                self.feishu.send_card(
+                    format_status_notification("Claude Code resumed. Ready.")
+                )
+                return
+        logger.error("Claude Code failed to resume after 30s")
+        self.feishu.send_card(
+            format_status_notification("Claude Code failed to resume. Check manually.", "red")
+        )
 
     def _schedule_menu_detection(self):
         """Start background thread to detect selection menus."""
