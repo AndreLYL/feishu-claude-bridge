@@ -5,22 +5,47 @@ from typing import Optional
 
 def parse_selection_menu(pane_text: str) -> Optional[dict]:
     """Parse a TUI selection menu from captured pane text.
+    Detects both AskUserQuestion menus ("Enter to select") and
+    permission/edit menus ("Esc to cancel").
     Returns None if no menu detected, or dict with options and selected_index."""
-    if "Enter to select" not in pane_text:
+    # Detect menu markers — Claude Code uses specific formatted lines at the bottom.
+    # Real menu markers are standalone lines like:
+    #   "  Enter to select · ↑/↓ to navigate · Esc to cancel"
+    #   "  Esc to cancel · Tab to amend"
+    #   "  Esc to cancel"
+    # They start with whitespace and are standalone (not embedded in prose).
+    # Only check the last 15 lines to avoid false positives from assistant text.
+    lines = pane_text.split("\n")
+    tail_lines = lines[-15:]
+    has_menu = False
+    for tl in tail_lines:
+        stripped = tl.strip()
+        # Match exact menu footer patterns:
+        # - Line that IS "Esc to cancel" (optionally with · Tab to amend)
+        # - Line containing "Enter to select" with · separator
+        if re.match(r'^(Esc to cancel|Enter to select)', stripped) and tl.startswith(' '):
+            has_menu = True
+            break
+    if not has_menu:
         return None
 
-    lines = pane_text.split("\n")
+    # Only parse options from the tail section where the menu was detected
     options = []
     selected_index = 0
 
-    for line in lines:
+    for line in tail_lines:
         stripped = line.strip()
-        match = re.match(r'^(>?\s*)\d+\.\s+(.+)', stripped)
+        # Match both formats:
+        #   AskUserQuestion: "> 1. Option text" or "  1. Option text"
+        #   Permission menu: "❯ 1. Yes" or "  2. No"
+        match = re.match(r'^([>❯]?\s*)\d+\.\s+(.+)', stripped)
         if match:
             prefix = match.group(1)
             text = match.group(2).strip()
-            if text and "Enter to select" not in text:
-                if ">" in prefix:
+            # Skip marker lines that happen to match
+            skip_texts = ["Enter to select", "Esc to cancel", "Tab to amend"]
+            if text and not any(s in text for s in skip_texts):
+                if ">" in prefix or "❯" in prefix:
                     selected_index = len(options)
                 options.append(text)
 
@@ -84,6 +109,48 @@ class TmuxController:
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
         return None
+
+    def is_claude_running(self) -> bool:
+        """Check if Claude Code CLI is running in the tmux pane.
+        Checks child processes of the pane's shell for 'claude' or 'node'."""
+        # Get pane PID (the shell process)
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", self._target, "-p", "#{pane_pid}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return False
+        pane_pid = result.stdout.strip()
+        # Check child processes for claude
+        children = subprocess.run(
+            ["pgrep", "-P", pane_pid],
+            capture_output=True,
+            text=True,
+        )
+        if children.returncode != 0:
+            return False
+        for child_pid in children.stdout.strip().split("\n"):
+            if not child_pid:
+                continue
+            proc = subprocess.run(
+                ["ps", "-o", "comm=", "-p", child_pid],
+                capture_output=True,
+                text=True,
+            )
+            cmd = proc.stdout.strip().lower()
+            if "claude" in cmd or "node" in cmd:
+                return True
+        return False
+
+    def restart_claude(self, resume: bool = True) -> None:
+        """Start Claude Code in the tmux pane.
+        If resume=True, resumes the previous session."""
+        cmd = "claude --resume" if resume else "claude"
+        subprocess.run(
+            ["tmux", "send-keys", "-t", self._target, "--", cmd, "Enter"],
+            check=True,
+        )
 
     def select_option(self, target_index: int, current_index: int = 0) -> None:
         """Navigate to and select a menu option by index.
