@@ -62,7 +62,8 @@ class CardManager:
         """Send a new card or PATCH the active one. Returns message_id."""
         if self._active_card_id is None:
             msg_id = self.feishu.send_card(card)
-            self._active_card_id = msg_id
+            if msg_id:
+                self._active_card_id = msg_id
             return msg_id
         else:
             self.feishu.update_card(self._active_card_id, card.get("card", card))
@@ -130,6 +131,7 @@ class Bridge:
         self._pending_permission_id: Optional[str] = None
         self._heartbeat_start: Optional[float] = None
         self._accumulated_text: List[str] = []
+        self._menu_detect_active = False
 
     def start(self):
         # Verify tmux is alive
@@ -326,7 +328,13 @@ class Bridge:
         )
 
     def _schedule_menu_detection(self):
-        """Start background thread to detect selection menus."""
+        """Start background thread to detect selection menus.
+        Only one detection thread runs at a time to prevent duplicate cards."""
+        with self._menu_lock:
+            if self._menu_detect_active or self._state == STATE_WAITING_SELECTION:
+                return
+            self._menu_detect_active = True
+
         def detect_menu():
             try:
                 time.sleep(2.0)
@@ -344,6 +352,9 @@ class Bridge:
                         time.sleep(2.0)
             except Exception as e:
                 logger.error(f"Error in menu detection: {e}", exc_info=True)
+            finally:
+                with self._menu_lock:
+                    self._menu_detect_active = False
 
         thread = threading.Thread(target=detect_menu, daemon=True)
         thread.start()

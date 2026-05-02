@@ -10,20 +10,29 @@ def parse_selection_menu(pane_text: str) -> Optional[dict]:
     Returns None if no menu detected, or dict with options and selected_index."""
     # Detect menu markers — Claude Code uses specific formatted lines at the bottom.
     # Real menu markers are standalone lines like:
-    #   "  Enter to select · ↑/↓ to navigate · Esc to cancel"
+    #   "Enter to select · ↑/↓ to navigate · Esc to cancel"
     #   "  Esc to cancel · Tab to amend"
     #   "  Esc to cancel"
-    # They start with whitespace and are standalone (not embedded in prose).
+    # They may or may not start with whitespace depending on the menu type.
+    # AskUserQuestion menus render the footer at column 0 (no indent).
     # Only check the last 15 lines to avoid false positives from assistant text.
     lines = pane_text.split("\n")
     tail_lines = lines[-15:]
     has_menu = False
+    # Check for structural TUI indicators: separator lines (───) or
+    # numbered options with selection markers (❯/>) to distinguish
+    # real menus from assistant prose that mentions menu keywords.
+    has_tui_structure = (
+        any("───" in tl for tl in tail_lines) or
+        any(re.match(r'^\s*[>❯]\s*\d+\.', tl.strip()) for tl in tail_lines)
+    )
     for tl in tail_lines:
         stripped = tl.strip()
         # Match exact menu footer patterns:
         # - Line that IS "Esc to cancel" (optionally with · Tab to amend)
         # - Line containing "Enter to select" with · separator
-        if re.match(r'^(Esc to cancel|Enter to select)', stripped) and tl.startswith(' '):
+        # Must co-occur with TUI structural elements to avoid false positives.
+        if re.match(r'^(Esc to cancel|Enter to select)', stripped) and has_tui_structure:
             has_menu = True
             break
     if not has_menu:

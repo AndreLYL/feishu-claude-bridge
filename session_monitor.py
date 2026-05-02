@@ -85,7 +85,7 @@ class SessionMonitor:
         on_heartbeat: Optional[Callable[[], None]] = None,
         on_turn_end: Optional[Callable[[], None]] = None,
         poll_interval: float = 1.0,
-        stale_threshold: float = 30.0,
+        stale_threshold: float = 60.0,
     ):
         self.jsonl_path = jsonl_path
         self.on_text_message = on_text_message
@@ -195,6 +195,7 @@ class SessionMonitor:
                     had_sendable = True
 
         if not had_sendable and self.on_heartbeat:
+            self._last_data_time = time.time()  # file changed — session is active
             self.on_heartbeat()
 
     def _check_stale_and_reposition(self):
@@ -221,5 +222,5 @@ class SessionMonitor:
         if latest and latest != self.jsonl_path:
             logger.info(f"Auto-switched to {latest.name}")
             self.jsonl_path = latest
-            self._offset = latest.stat().st_size  # seek to end — only monitor NEW data
+            self._offset = 0  # seek to beginning — process any responses already written
             self._last_data_time = time.time()
