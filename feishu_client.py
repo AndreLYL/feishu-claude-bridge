@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from collections import OrderedDict
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -36,6 +37,8 @@ class FeishuClient:
         self.on_image = on_image
         self._image_dir = Path(image_dir or "/tmp/feishu-bridge-images")
         self._image_dir.mkdir(parents=True, exist_ok=True)
+        self._seen_msg_ids: OrderedDict[str, None] = OrderedDict()
+        self._seen_msg_ids_max = 200
 
         # Build event handler
         event_handler = (
@@ -123,10 +126,24 @@ class FeishuClient:
             logger.warning(f"Rejected message from chat {msg.chat_id}")
             return
 
+        # Dedup: skip already-seen messages (WebSocket reconnect can re-deliver)
+        msg_id = msg.message_id
+        if msg_id in self._seen_msg_ids:
+            logger.info(f"Skipping duplicate message: {msg_id}")
+            return
+        self._seen_msg_ids[msg_id] = None
+        if len(self._seen_msg_ids) > self._seen_msg_ids_max:
+            self._seen_msg_ids.popitem(last=False)
+
         # Extract text content
         if msg.message_type == "text":
             content = json.loads(msg.content)
             text = content.get("text", "").strip()
+            if text:
+                self.on_message(text)
+        elif msg.message_type == "post":
+            content = json.loads(msg.content)
+            text = self._extract_post_text(content)
             if text:
                 self.on_message(text)
         elif msg.message_type == "image" and self.on_image:
@@ -136,6 +153,29 @@ class FeishuClient:
                 local_path = self._download_image(msg.message_id, image_key)
                 if local_path:
                     self.on_image(local_path)
+
+    @staticmethod
+    def _extract_post_text(content: dict) -> str:
+        """Extract plain text from Feishu post (rich text) message."""
+        lines = []
+        # Post format: {"zh_cn": {"title": "...", "content": [[{"tag":"text","text":"..."},...]]}}
+        for locale_data in content.values():
+            if not isinstance(locale_data, dict):
+                continue
+            title = locale_data.get("title", "")
+            if title:
+                lines.append(title)
+            for para in locale_data.get("content", []):
+                parts = []
+                for node in para:
+                    if node.get("tag") == "text":
+                        parts.append(node.get("text", ""))
+                    elif node.get("tag") == "a":
+                        parts.append(node.get("text", "") or node.get("href", ""))
+                if parts:
+                    lines.append("".join(parts))
+            break  # Only process first locale
+        return "\n".join(lines).strip()
 
     def _download_image(self, message_id: str, image_key: str) -> Optional[str]:
         """Download image from Feishu and save locally. Returns local file path."""

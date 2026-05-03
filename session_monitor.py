@@ -103,9 +103,16 @@ class SessionMonitor:
 
     def start(self) -> threading.Thread:
         """Start polling in a background thread."""
-        # Seek to end of file so we only get NEW messages
+        # Seek to a safe position: if the file was recently modified (within 30s),
+        # there may be unread responses from before a crash/restart — read from
+        # beginning to catch them. Otherwise seek to end for NEW messages only.
         if self.jsonl_path.exists():
-            self._offset = self.jsonl_path.stat().st_size
+            age = time.time() - self.jsonl_path.stat().st_mtime
+            if age < 30:
+                self._offset = 0
+                logger.info("JSONL recently modified — reading from beginning to catch pending replies")
+            else:
+                self._offset = self.jsonl_path.stat().st_size
 
         t = threading.Thread(target=self._poll_loop, daemon=True)
         t.start()

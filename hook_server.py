@@ -84,10 +84,14 @@ class HookHandler(BaseHTTPRequestHandler):
         logger.debug(format % args)
 
 
+class _ReusableHTTPServer(HTTPServer):
+    allow_reuse_address = True
+
+
 def start_hook_server(port: int, bridge_ref) -> threading.Thread:
     """Start the hook HTTP server in a background thread."""
     HookHandler.bridge_ref = bridge_ref
-    server = HTTPServer(("127.0.0.1", port), HookHandler)
+    server = _ReusableHTTPServer(("127.0.0.1", port), HookHandler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     logger.info(f"Hook server listening on 127.0.0.1:{port}")
