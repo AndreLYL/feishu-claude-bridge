@@ -93,7 +93,8 @@ class CardManager:
 
 class Bridge:
     def __init__(self, tmux_session: str, tmux_window: Optional[str] = None,
-                 session_file: Optional[str] = None, exclude_sessions: Optional[List[str]] = None):
+                 session_file: Optional[str] = None, exclude_sessions: Optional[List[str]] = None,
+                 max_sessions: int = 5, session_store_path: Path = None):
         # Feishu client
         self.feishu = FeishuClient(
             app_id=os.environ["FEISHU_APP_ID"],
@@ -105,10 +106,13 @@ class Bridge:
         )
 
         # Multi-session support
+        if session_store_path is None:
+            session_store_path = Path.home() / ".feishu-claude-bridge" / "sessions.json"
+
         self.session_manager = SessionManager(
             tmux_session=tmux_session,
-            store_path=Path.home() / ".feishu-claude-bridge" / "sessions.json",
-            max_sessions=5,
+            store_path=session_store_path,
+            max_sessions=max_sessions,
         )
 
         # Per-session state and resources
@@ -697,12 +701,28 @@ class Bridge:
 def main():
     parser = argparse.ArgumentParser(description="Feishu ↔ Claude Code Bridge")
     parser.add_argument("--tmux-session", required=True, help="tmux session name")
-    parser.add_argument("--tmux-window", default=None, help="tmux window index/name")
-    parser.add_argument("--session-file", default=None, help="Path to Claude Code session JSONL file")
-    parser.add_argument("--exclude-session", action="append", default=[], help="Session UUID(s) to exclude from auto-detect (repeatable)")
+    parser.add_argument("--tmux-window", default=None, help="tmux window index/name (legacy mode)")
+    parser.add_argument("--session-file", default=None, help="Path to Claude Code session JSONL file (legacy mode)")
+    parser.add_argument("--exclude-session", action="append", default=[], help="Session UUID(s) to exclude from auto-detect (legacy mode, repeatable)")
+    parser.add_argument("--max-sessions", type=int, default=None, help="Maximum number of concurrent sessions (default: 5, can also set via MAX_SESSIONS env var)")
+    parser.add_argument("--session-store-path", default=None, help="Path to sessions.json file (default: ~/.feishu-claude-bridge/sessions.json, can also set via SESSION_STORE_PATH env var)")
     args = parser.parse_args()
 
-    bridge = Bridge(args.tmux_session, args.tmux_window, args.session_file, args.exclude_session)
+    # Read config from args/env vars with defaults
+    max_sessions = args.max_sessions or int(os.environ.get("MAX_SESSIONS", "5"))
+    session_store_path = args.session_store_path or os.environ.get(
+        "SESSION_STORE_PATH",
+        str(Path.home() / ".feishu-claude-bridge" / "sessions.json")
+    )
+
+    bridge = Bridge(
+        args.tmux_session,
+        args.tmux_window,
+        args.session_file,
+        args.exclude_session,
+        max_sessions=max_sessions,
+        session_store_path=Path(session_store_path)
+    )
 
     def shutdown(sig, frame):
         logger.info("Shutting down...")

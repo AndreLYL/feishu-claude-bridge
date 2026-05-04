@@ -22,6 +22,7 @@ Feishu App ←(WebSocket)→ Bridge ←(tmux send-keys / JSONL)→ Claude Code C
 
 ## Features
 
+- **Multi-session management**: Create and manage up to 5 concurrent Claude Code sessions, switch between them seamlessly
 - **Session takeover**: Connect to a running Claude Code tmux session with full context
 - **Streaming card updates**: Responses update in-place on a single card (no message spam)
 - **Thinking visibility**: See Claude's thinking process as grey cards
@@ -62,10 +63,18 @@ cp .env.example .env
 
 Edit `.env`:
 
-```
+```bash
+# Feishu App Credentials
 FEISHU_APP_ID=cli_xxxxx          # From Feishu app credentials
 FEISHU_APP_SECRET=xxxxx          # From Feishu app credentials
 ALLOWED_CHAT_ID=oc_xxxxx         # Chat ID where the bot lives
+
+# Hook server port (optional, default: 19280)
+HOOK_SERVER_PORT=19280
+
+# Multi-session configuration (optional)
+MAX_SESSIONS=5                   # Maximum concurrent sessions (default: 5)
+# SESSION_STORE_PATH=/path/to/sessions.json  # Custom path (default: ~/.feishu-claude-bridge/sessions.json)
 ```
 
 To find `ALLOWED_CHAT_ID`: send any message to the bot, check bridge logs for the chat ID.
@@ -86,12 +95,23 @@ claude
 source .venv/bin/activate
 python bridge.py --tmux-session claude
 
+# With custom session limit and store path:
+python bridge.py --tmux-session claude --max-sessions 10 --session-store-path /custom/path/sessions.json
+
 # Option B: One-command
 ./claude-bridge start
 
 # Option C: launchd daemon (auto-start on boot)
 bash scripts/install-service.sh
 ```
+
+**CLI Options:**
+- `--tmux-session SESSION`: tmux session name (required)
+- `--max-sessions N`: Maximum concurrent sessions (default: 5, can also use `MAX_SESSIONS` env var)
+- `--session-store-path PATH`: Custom path for sessions.json (default: ~/.feishu-claude-bridge/sessions.json, can also use `SESSION_STORE_PATH` env var)
+- `--tmux-window WINDOW`: Legacy mode - connect to specific tmux window
+- `--session-file FILE`: Legacy mode - specific JSONL file path
+- `--exclude-session UUID`: Legacy mode - exclude session UUIDs from auto-detect (repeatable)
 
 ### 6. Chat from Feishu
 
@@ -123,14 +143,43 @@ Open the bot chat in Feishu and start typing. Your messages go directly to the C
 
 ## Commands
 
+### Multi-Session Commands
+
+The bridge supports managing multiple Claude Code sessions simultaneously:
+
+| Command | Action |
+|---------|--------|
+| `/new [name]` | Create a new Claude session (auto-named if no name provided) |
+| `/list` | List all active sessions with their status |
+| `/switch <n>` | Switch to session N (use numbers from `/list`) |
+| `/delete <n>` | Delete session N (cannot delete active session) |
+| `/rename <n> <name>` | Rename session N to a new name |
+| `/current` | Show information about the current active session |
+
+**Examples:**
+```
+/new research              # Create session named "research"
+/new                       # Create auto-named session (e.g., "session-1")
+/list                      # See all sessions
+/switch 2                  # Switch to session #2
+/rename 2 debugging        # Rename session #2 to "debugging"
+/current                   # Show current session info
+/delete 1                  # Delete session #1
+```
+
+**Session limits:** By default, you can have up to 5 concurrent sessions. Configure this via `MAX_SESSIONS` env var or `--max-sessions` CLI flag.
+
+### Control Commands
+
 In Feishu chat:
 
 | Command | Action |
 |---------|--------|
-| (any text) | Send to Claude |
-| (image) | Download and send file path to Claude |
+| (any text) | Send to active Claude session |
+| (image) | Download and send file path to active Claude session |
 | `y` / `n` | Approve/deny permission request |
-| `/esc` | Send Escape key (cancel current operation) |
+| `/esc` | Send Escape key to active session (cancel operation) |
+| `/screenshot` | Capture screenshot from active session |
 | `1`-`9` | Select menu option (when selection menu is active) |
 
 ## How it compares
