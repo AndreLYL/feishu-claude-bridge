@@ -109,12 +109,16 @@ class Bridge:
             sys.exit(1)
         logger.info(f"Monitoring session: {jsonl_path.name}")
 
+        # Extract session_id from JSONL filename (UUID.jsonl -> UUID)
+        session_id = jsonl_path.stem
+
         # Card manager for active turn lifecycle
         self.card_manager = CardManager(self.feishu)
 
         # Session monitor
         self.monitor = SessionMonitor(
             jsonl_path=jsonl_path,
+            session_id=session_id,
             on_text_message=self._handle_text_message,
             on_tool_use=self._handle_tool_use,
             on_thinking=self._handle_thinking,
@@ -254,7 +258,7 @@ class Bridge:
         except Exception as e:
             logger.error(f"Error handling card action: {e}", exc_info=True)
 
-    def _handle_text_message(self, text_blocks: List[str]):
+    def _handle_text_message(self, session_id: str, text_blocks: List[str]):
         """Handle new assistant text message from JSONL monitor."""
         try:
             self._heartbeat_start = None
@@ -266,7 +270,7 @@ class Bridge:
         except Exception as e:
             logger.error(f"Error handling text message: {e}", exc_info=True)
 
-    def _handle_tool_use(self, tools: List[Dict[str, str]]):
+    def _handle_tool_use(self, session_id: str, tools: List[Dict[str, str]]):
         """Handle tool use notification from JSONL monitor."""
         try:
             card = format_tool_use_notification(tools)
@@ -276,7 +280,7 @@ class Bridge:
         except Exception as e:
             logger.error(f"Error handling tool use: {e}", exc_info=True)
 
-    def _handle_thinking(self, thinking_text: str):
+    def _handle_thinking(self, session_id: str, thinking_text: str):
         """Handle thinking block from JSONL."""
         try:
             card = format_thinking_notification(thinking_text)
@@ -284,7 +288,7 @@ class Bridge:
         except Exception as e:
             logger.error(f"Error handling thinking: {e}", exc_info=True)
 
-    def _handle_heartbeat(self):
+    def _handle_heartbeat(self, session_id: str):
         """Handle heartbeat — file changed but no sendable content."""
         try:
             if self._heartbeat_start is None:
@@ -295,7 +299,7 @@ class Bridge:
         except Exception as e:
             logger.error(f"Error handling heartbeat: {e}", exc_info=True)
 
-    def _handle_turn_end(self):
+    def _handle_turn_end(self, session_id: str):
         """Handle turn boundary — human message appeared, finalize the card."""
         try:
             self.card_manager.finalize()

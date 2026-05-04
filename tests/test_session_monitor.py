@@ -20,9 +20,10 @@ def test_thinking_callback_fires():
     thinking_received = []
     monitor = SessionMonitor(
         jsonl_path=tmp,
-        on_text_message=lambda t: None,
-        on_tool_use=lambda t: None,
-        on_thinking=lambda text: thinking_received.append(text),
+        session_id="test-session-1",
+        on_text_message=lambda sid, t: None,
+        on_tool_use=lambda sid, t: None,
+        on_thinking=lambda sid, text: thinking_received.append((sid, text)),
     )
     monitor._offset = 0
 
@@ -38,7 +39,8 @@ def test_thinking_callback_fires():
     monitor._check_new_entries()
 
     assert len(thinking_received) == 1
-    assert "analyze" in thinking_received[0]
+    assert thinking_received[0][0] == "test-session-1"
+    assert "analyze" in thinking_received[0][1]
     tmp.unlink()
 
 
@@ -49,9 +51,10 @@ def test_heartbeat_callback_fires_on_non_text_entries():
     heartbeat_fired = []
     monitor = SessionMonitor(
         jsonl_path=tmp,
-        on_text_message=lambda t: None,
-        on_tool_use=lambda t: None,
-        on_heartbeat=lambda: heartbeat_fired.append(True),
+        session_id="test-session-2",
+        on_text_message=lambda sid, t: None,
+        on_tool_use=lambda sid, t: None,
+        on_heartbeat=lambda sid: heartbeat_fired.append(sid),
     )
     monitor._offset = 0
 
@@ -60,6 +63,7 @@ def test_heartbeat_callback_fires_on_non_text_entries():
     monitor._check_new_entries()
 
     assert len(heartbeat_fired) == 1
+    assert heartbeat_fired[0] == "test-session-2"
     tmp.unlink()
 
 
@@ -76,8 +80,9 @@ def test_stale_session_reposition(tmp_path):
 
     monitor = SessionMonitor(
         jsonl_path=old_file,
-        on_text_message=lambda t: None,
-        on_tool_use=lambda t: None,
+        session_id="test-session-3",
+        on_text_message=lambda sid, t: None,
+        on_tool_use=lambda sid, t: None,
     )
     monitor._offset = old_file.stat().st_size
     monitor._stale_threshold = 0  # Force immediate stale detection
@@ -96,8 +101,9 @@ def test_text_callback_still_works():
     text_received = []
     monitor = SessionMonitor(
         jsonl_path=tmp,
-        on_text_message=lambda t: text_received.append(t),
-        on_tool_use=lambda t: None,
+        session_id="test-session-4",
+        on_text_message=lambda sid, t: text_received.append((sid, t)),
+        on_tool_use=lambda sid, t: None,
     )
     monitor._offset = 0
 
@@ -113,5 +119,6 @@ def test_text_callback_still_works():
     monitor._check_new_entries()
 
     assert len(text_received) == 1
-    assert text_received[0] == ["Hello world"]
+    assert text_received[0][0] == "test-session-4"
+    assert text_received[0][1] == ["Hello world"]
     tmp.unlink()

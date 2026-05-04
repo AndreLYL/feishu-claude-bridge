@@ -79,15 +79,17 @@ class SessionMonitor:
     def __init__(
         self,
         jsonl_path: Path,
-        on_text_message: Callable[[List[str]], None],
-        on_tool_use: Callable[[List[Dict[str, str]]], None],
-        on_thinking: Optional[Callable[[str], None]] = None,
-        on_heartbeat: Optional[Callable[[], None]] = None,
-        on_turn_end: Optional[Callable[[], None]] = None,
+        session_id: str,
+        on_text_message: Callable[[str, List[str]], None],
+        on_tool_use: Callable[[str, List[Dict[str, str]]], None],
+        on_thinking: Optional[Callable[[str, str], None]] = None,
+        on_heartbeat: Optional[Callable[[str], None]] = None,
+        on_turn_end: Optional[Callable[[str], None]] = None,
         poll_interval: float = 1.0,
         stale_threshold: float = 60.0,
     ):
         self.jsonl_path = jsonl_path
+        self.session_id = session_id
         self.on_text_message = on_text_message
         self.on_tool_use = on_tool_use
         self.on_thinking = on_thinking
@@ -157,7 +159,7 @@ class SessionMonitor:
 
             if entry.get("type") in ("human", "user"):
                 if self.on_turn_end:
-                    self.on_turn_end()
+                    self.on_turn_end(self.session_id)
                 continue
 
             if entry.get("type") == "assistant":
@@ -170,7 +172,7 @@ class SessionMonitor:
                 ]
                 if thinking_blocks and self.on_thinking:
                     combined_thinking = "\n".join(thinking_blocks)
-                    self.on_thinking(combined_thinking)
+                    self.on_thinking(self.session_id, combined_thinking)
                     had_sendable = True
 
                 # Extract text blocks
@@ -194,16 +196,16 @@ class SessionMonitor:
                         tool_uses.append({"name": name, "input_summary": input_summary})
 
                 if tool_uses:
-                    self.on_tool_use(tool_uses)
+                    self.on_tool_use(self.session_id, tool_uses)
                     had_sendable = True
 
                 if text_blocks:
-                    self.on_text_message(text_blocks)
+                    self.on_text_message(self.session_id, text_blocks)
                     had_sendable = True
 
         if not had_sendable and self.on_heartbeat:
             self._last_data_time = time.time()  # file changed — session is active
-            self.on_heartbeat()
+            self.on_heartbeat(self.session_id)
 
     def _check_stale_and_reposition(self):
         """If current JSONL is stale, try to find a newer one in the same project dir."""
