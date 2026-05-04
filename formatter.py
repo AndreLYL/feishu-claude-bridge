@@ -196,3 +196,82 @@ def format_selection_menu(options) -> dict:
         },
     }
     return card
+
+
+def format_session_list(sessions, active_id: str) -> dict:
+    """Create a blue card showing session list with active marker.
+
+    Args:
+        sessions: List of session dicts (each has: id, name, state, created_at)
+        active_id: ID of the currently active session
+
+    Returns:
+        Feishu interactive card message dict
+    """
+    # Sort sessions by created_at (oldest first)
+    sorted_sessions = sorted(sessions, key=lambda s: s["created_at"])
+
+    # Build session list
+    lines = []
+    for idx, session in enumerate(sorted_sessions, start=1):
+        marker = "▶" if session["id"] == active_id else "◻"
+        lines.append(
+            f"{marker} {idx}. 📌 {session['name']} · {session['state']} · {session['created_at']}"
+        )
+
+    # Build content
+    if lines:
+        content = "\n".join(lines) + "\n\n---\n/switch <n> 切换 · /delete <n> 删除"
+    else:
+        content = "No active sessions\n\n---\n/switch <n> 切换 · /delete <n> 删除"
+
+    card = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": f"📋 Sessions ({len(sessions)})"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+            ],
+        },
+    }
+    return card
+
+
+def format_session_info(session: dict) -> dict:
+    """Create a blue card showing detailed session information.
+
+    Args:
+        session: Session dict (id, name, state, created_at, tmux_window, jsonl_path)
+
+    Returns:
+        Feishu interactive card message dict
+    """
+    # Build content lines
+    lines = [
+        f"ID: {session['id']} | State: {session['state']}",
+    ]
+
+    # Add optional fields if present
+    if "tmux_window" in session:
+        lines.append(f"Window: {session['tmux_window']}")
+
+    lines.append(f"Created: {session['created_at']}")
+
+    content = "\n".join(lines)
+
+    card = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": f"📌 Session: {session['name']}"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+            ],
+        },
+    }
+    return card
