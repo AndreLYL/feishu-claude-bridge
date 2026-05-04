@@ -331,12 +331,17 @@ class TestIntegrationMultiSession(unittest.TestCase):
                 mock_tmux = MockTmux.return_value
                 mock_tmux.create_window.return_value = True
 
-                # Create Bridge
+                # Create Bridge with isolated store
+                import tempfile
+                tmp_dir = tempfile.mkdtemp()
+                tmp_store = Path(tmp_dir) / "sessions.json"
+
                 bridge = Bridge(
                     tmux_session="test-session",
                     tmux_window=None,
                     session_file=None,
-                    exclude_sessions=None
+                    exclude_sessions=None,
+                    session_store_path=tmp_store
                 )
 
                 # Create two sessions via SessionManager

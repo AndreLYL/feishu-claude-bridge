@@ -239,7 +239,7 @@ class Bridge:
                     return self._cmd_switch(num)
                 except (ValueError, IndexError):
                     self.feishu.send_card(
-                        format_status_notification("Invalid command. Usage: /switch <number>", "red")
+                        format_status_notification("用法: /switch <数字>，例如 /switch 1", "red")
                     )
                     return
             elif text_stripped.startswith("/delete"):
@@ -248,7 +248,7 @@ class Bridge:
                     return self._cmd_delete(num)
                 except (ValueError, IndexError):
                     self.feishu.send_card(
-                        format_status_notification("Invalid command. Usage: /delete <number>", "red")
+                        format_status_notification("用法: /delete <数字>，例如 /delete 2", "red")
                     )
                     return
             elif text_stripped.startswith("/rename"):
@@ -259,7 +259,7 @@ class Bridge:
                     return self._cmd_rename(num, name)
                 except (ValueError, IndexError):
                     self.feishu.send_card(
-                        format_status_notification("Invalid command. Usage: /rename <number> <name>", "red")
+                        format_status_notification("用法: /rename <数字> <新名称>", "red")
                     )
                     return
             elif text_stripped == "/current":

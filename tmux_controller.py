@@ -177,7 +177,7 @@ class TmuxController:
         """Create a new tmux window with the specified name.
         Returns True on success, False on failure."""
         result = subprocess.run(
-            ["tmux", "new-window", "-t", f"{self.session}:{name}", "-n", name],
+            ["tmux", "new-window", "-t", f"{self.session}:", "-n", name],
             capture_output=True,
         )
         return result.returncode == 0

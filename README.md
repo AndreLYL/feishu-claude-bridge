@@ -134,12 +134,13 @@ Open the bot chat in Feishu and start typing. Your messages go directly to the C
 
 | Module | Role |
 |--------|------|
-| `bridge.py` | Main orchestrator, state machine, card lifecycle |
+| `bridge.py` | Main orchestrator, command routing, per-session state machine |
+| `session_manager.py` | Multi-session lifecycle: create, switch, delete, rename, persist, recover |
 | `feishu_client.py` | Feishu WebSocket connection, send/update cards, download images |
 | `session_monitor.py` | Poll JSONL for new assistant messages, thinking, tool use |
-| `tmux_controller.py` | Send keystrokes to tmux, capture pane content |
-| `formatter.py` | Format Feishu interactive cards (reply, thinking, tool, permission) |
-| `hook_server.py` | HTTP server for Claude Code permission hooks |
+| `tmux_controller.py` | Send keystrokes to tmux, manage windows, capture pane content |
+| `formatter.py` | Format Feishu interactive cards (reply, thinking, tool, permission, session list) |
+| `hook_server.py` | HTTP server for Claude Code permission hooks (session-aware) |
 
 ## Commands
 

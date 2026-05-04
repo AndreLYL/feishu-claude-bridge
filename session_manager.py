@@ -96,7 +96,7 @@ class SessionManager:
             raise ValueError(f"Invalid display number: {display_number}")
 
         if session_id == self.active_session:
-            raise ValueError("Cannot delete active session")
+            raise ValueError("不能删除当前活跃的 session，请先 /switch 切换到其他 session")
 
         session = self.sessions[session_id]
         tmux_window = session["tmux_window"]

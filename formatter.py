@@ -215,8 +215,17 @@ def format_session_list(sessions, active_id: str) -> dict:
     lines = []
     for idx, session in enumerate(sorted_sessions, start=1):
         marker = "▶" if session["id"] == active_id else "◻"
+        # Format date as MM-DD HH:MM
+        created = session["created_at"]
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(created)
+            dt = dt.astimezone()  # convert to local timezone
+            created = dt.strftime("%m-%d %H:%M")
+        except (ValueError, TypeError):
+            pass
         lines.append(
-            f"{marker} {idx}. 📌 {session['name']} · {session['state']} · {session['created_at']}"
+            f"{marker} {idx}. 📌 {session['name']} · {session['state']} · {created}"
         )
 
     # Build content
@@ -258,7 +267,16 @@ def format_session_info(session: dict) -> dict:
     if "tmux_window" in session:
         lines.append(f"Window: {session['tmux_window']}")
 
-    lines.append(f"Created: {session['created_at']}")
+    # Format date to local time
+    created = session['created_at']
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(created)
+        dt = dt.astimezone()
+        created = dt.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        pass
+    lines.append(f"Created: {created}")
 
     content = "\n".join(lines)
 
