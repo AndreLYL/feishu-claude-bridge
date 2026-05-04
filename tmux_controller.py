@@ -172,3 +172,46 @@ class TmuxController:
             self.send_key("Down")
         # Confirm
         self.send_key("Enter")
+
+    def create_window(self, name: str) -> bool:
+        """Create a new tmux window with the specified name.
+        Returns True on success, False on failure."""
+        result = subprocess.run(
+            ["tmux", "new-window", "-t", f"{self.session}:{name}", "-n", name],
+            capture_output=True,
+        )
+        return result.returncode == 0
+
+    def kill_window(self, name: str) -> bool:
+        """Kill a tmux window with the specified name.
+        Returns True on success, False on failure."""
+        result = subprocess.run(
+            ["tmux", "kill-window", "-t", f"{self.session}:{name}"],
+            capture_output=True,
+        )
+        return result.returncode == 0
+
+    def window_exists(self, name: str) -> bool:
+        """Check if a tmux window with the specified name exists.
+        Returns True if the window exists, False otherwise."""
+        result = subprocess.run(
+            ["tmux", "list-windows", "-t", self.session, "-F", "#{window_name}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False
+        window_names = result.stdout.strip().split("\n")
+        return name in window_names
+
+    def start_claude(self, window_name: str, resume_id: Optional[str] = None) -> None:
+        """Start Claude Code CLI in a specific window.
+        If resume_id is provided, resumes that specific session."""
+        if resume_id:
+            cmd = f"claude --resume {resume_id}"
+        else:
+            cmd = "claude"
+        subprocess.run(
+            ["tmux", "send-keys", "-t", f"{self.session}:{window_name}", "--", cmd, "Enter"],
+            check=True,
+        )
