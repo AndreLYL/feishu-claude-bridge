@@ -11,16 +11,19 @@ HOOK_URL="http://127.0.0.1:${HOOK_PORT}"
 POLL_INTERVAL=2
 TIMEOUT=300  # 5 minutes max wait
 
+# Extract session ID from tmux window name
+WINDOW_NAME=$(tmux display-message -p '#{window_name}' 2>/dev/null || echo "default")
+
 # Read tool info from stdin
 TOOL_JSON=$(cat)
 TOOL_NAME=$(echo "$TOOL_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_name','unknown'))" 2>/dev/null)
 TOOL_INPUT=$(echo "$TOOL_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d.get('tool_input',{}))[:500])" 2>/dev/null)
 REQUEST_ID="perm-$$-$(date +%s)"
 
-# Post permission request
+# Post permission request with session_id
 curl -s -X POST "${HOOK_URL}/permission-request" \
   -H "Content-Type: application/json" \
-  -d "{\"request_id\": \"${REQUEST_ID}\", \"tool_name\": \"${TOOL_NAME}\", \"tool_input\": \"${TOOL_INPUT}\"}" > /dev/null 2>&1
+  -d "{\"session_id\": \"${WINDOW_NAME}\", \"request_id\": \"${REQUEST_ID}\", \"tool_name\": \"${TOOL_NAME}\", \"tool_input\": \"${TOOL_INPUT}\"}" > /dev/null 2>&1
 
 # If hook server is not running, allow by default (bridge not active)
 if [ $? -ne 0 ]; then
