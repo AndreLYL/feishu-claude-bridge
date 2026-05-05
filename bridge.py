@@ -126,6 +126,9 @@ class Bridge:
         if session_file or tmux_window:
             self._init_legacy_mode(tmux_session, tmux_window, session_file, exclude_sessions)
 
+        # Recover runtime state for persisted sessions
+        self._recover_sessions(tmux_session)
+
         self.hook_port = int(os.environ.get("HOOK_SERVER_PORT", "19280"))
         self._menu_lock = threading.Lock()
 
@@ -175,6 +178,81 @@ class Bridge:
         )
         self.session_monitors[session_id] = monitor
 
+    def _start_monitor_for_session(self, session_id: str, tmux_window: str):
+        """Discover JSONL and start SessionMonitor for a session.
+        Runs in a background thread since JSONL may not exist yet (Claude still starting)."""
+        # Check if we already have a stored jsonl_path
+        session_data = self.session_manager.sessions.get(session_id, {})
+        stored_jsonl = session_data.get("jsonl_path")
+        if stored_jsonl:
+            stored_path = Path(stored_jsonl)
+            if stored_path.exists():
+                self._create_monitor(session_id, stored_path)
+                return
+
+        def _discover_and_start():
+            tmux = TmuxController(self.session_manager.tmux_session, tmux_window)
+            jsonl_path = None
+            # Record the time we start searching — only accept JSONL modified after this
+            import time as _time
+            search_start = _time.time()
+
+            # Collect JSONL paths already claimed by other monitors
+            used_paths = set()
+            for sid, mon in self.session_monitors.items():
+                if sid != session_id and hasattr(mon, 'jsonl_path'):
+                    used_paths.add(str(mon.jsonl_path))
+
+            # Retry up to 60 seconds waiting for a NEW JSONL to appear
+            for attempt in range(60):
+                cwd = tmux.get_pane_cwd()
+                if cwd:
+                    from session_monitor import cwd_to_project_slug
+                    slug = cwd_to_project_slug(cwd)
+                    project_dir = Path.home() / ".claude" / "projects" / slug
+                    if project_dir.exists():
+                        candidates = sorted(
+                            project_dir.glob("*.jsonl"),
+                            key=lambda p: p.stat().st_mtime,
+                            reverse=True
+                        )
+                        for candidate in candidates:
+                            if str(candidate) in used_paths:
+                                continue
+                            # Only accept JSONL modified AFTER we started searching
+                            if candidate.stat().st_mtime >= search_start:
+                                jsonl_path = candidate
+                                break
+                    if jsonl_path and jsonl_path.exists():
+                        break
+                time.sleep(1)
+            if not jsonl_path or not jsonl_path.exists():
+                logger.warning(f"Could not find JSONL for session {session_id} (window {tmux_window})")
+                return
+            # Store path in session metadata for future recovery
+            if session_id in self.session_manager.sessions:
+                self.session_manager.sessions[session_id]["jsonl_path"] = str(jsonl_path)
+                self.session_manager._persist()
+            self._create_monitor(session_id, jsonl_path)
+
+        thread = threading.Thread(target=_discover_and_start, daemon=True)
+        thread.start()
+
+    def _create_monitor(self, session_id: str, jsonl_path: Path):
+        """Create and store a SessionMonitor for the given JSONL path."""
+        logger.info(f"Session {session_id}: monitoring {jsonl_path.name}")
+        monitor = SessionMonitor(
+            jsonl_path=jsonl_path,
+            session_id=session_id,
+            on_text_message=self._handle_text_message,
+            on_tool_use=self._handle_tool_use,
+            on_thinking=self._handle_thinking,
+            on_heartbeat=self._handle_heartbeat,
+            on_turn_end=self._handle_turn_end,
+        )
+        self.session_monitors[session_id] = monitor
+        monitor.start()
+
     def start(self):
         # Start hook server
         start_hook_server(self.hook_port, self)
@@ -218,6 +296,22 @@ class Bridge:
             self.feishu.send_card(card)
         except Exception as e:
             logger.error(f"Error sending permission card: {e}", exc_info=True)
+
+    def _recover_sessions(self, tmux_session: str):
+        """Recover runtime state for sessions loaded from sessions.json."""
+        sessions, active_id = self.session_manager.list_sessions()
+        for session in sessions:
+            sid = session["id"]
+            if sid not in self.session_states:
+                self.session_states[sid] = SessionState(session_id=sid)
+                self.session_controllers[sid] = TmuxController(
+                    tmux_session, session["tmux_window"]
+                )
+                self.card_managers[sid] = CardManager(self.feishu)
+                self._start_monitor_for_session(sid, session["tmux_window"])
+                logger.info(f"Recovered runtime state for session {sid} ({session['name']})")
+        if active_id and not self.active_session_id:
+            self.active_session_id = active_id
 
     def _handle_feishu_message(self, text: str):
         """Handle text message from Feishu."""
@@ -351,10 +445,8 @@ class Bridge:
             )
             self.card_managers[session_id] = CardManager(self.feishu)
 
-            # Start monitor for this session
-            # TODO: Find JSONL file for this session
-            # For now, we'll create a placeholder monitor that doesn't monitor anything
-            # Real implementation would need to discover the JSONL path
+            # Start monitor (background — JSONL may take a moment to appear)
+            self._start_monitor_for_session(session_id, session["tmux_window"])
 
             # Set as active
             self.active_session_id = session_id
