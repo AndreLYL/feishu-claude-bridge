@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import asyncio
+import types
 from pathlib import Path
 
 import pytest
@@ -160,3 +161,58 @@ async def test_permission_request_emitted_from_fixture():
     )
     assert p.tool_name == "Write", f"Expected tool_name='Write', got {p.tool_name!r}"
     assert "file_path" in p.input, f"Expected 'file_path' in input, got {p.input}"
+
+
+# ---------------------------------------------------------------------------
+# Test 5: answer_permission writes correct control_response JSON to stdin
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_answer_permission_writes_control_response_to_stdin():
+    """Unit test: verify answer_permission writes the correct control_response
+    JSON (with request_id and decision) to stdin without needing a real subprocess."""
+    # Construct a StreamJsonDriver instance (no subprocess start)
+    driver = StreamJsonDriver(
+        name="test",
+        argv=["dummy"],
+        cwd="/tmp",
+        session_id="test-sid",
+    )
+
+    # Stub stdin with a recorder
+    written_lines = []
+
+    async def stub_drain():
+        """No-op async drain."""
+        pass
+
+    class StubStdin:
+        def write(self, data: bytes) -> None:
+            """Record written bytes as decoded string."""
+            written_lines.append(data.decode("utf-8"))
+
+        async def drain(self) -> None:
+            """Async drain (no-op)."""
+            await stub_drain()
+
+    # Replace the process mock with a stub stdin
+    driver._proc = types.SimpleNamespace(stdin=StubStdin())
+
+    # Test 1: answer_permission with allow=True
+    await driver.answer_permission("req-123", allow=True)
+    assert len(written_lines) == 1, f"Expected 1 write, got {len(written_lines)}"
+    line = written_lines[0].strip()
+    obj = json.loads(line)
+    assert obj["type"] == "control_response"
+    assert obj["request_id"] == "req-123"
+    assert obj["decision"] == "allow"
+
+    # Test 2: answer_permission with allow=False
+    written_lines.clear()
+    await driver.answer_permission("req-456", allow=False)
+    assert len(written_lines) == 1, f"Expected 1 write, got {len(written_lines)}"
+    line = written_lines[0].strip()
+    obj = json.loads(line)
+    assert obj["type"] == "control_response"
+    assert obj["request_id"] == "req-456"
+    assert obj["decision"] == "deny"
