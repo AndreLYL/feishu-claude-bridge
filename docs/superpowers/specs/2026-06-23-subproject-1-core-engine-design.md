@@ -66,20 +66,35 @@
 ### 3.2 SessionDriver 接口 + StreamJsonDriver（`drivers/`）
 - `SessionDriver` 抽象接口：`start() / send(user_msg) / events() / close() / answer_permission()`。未来可插回 `TmuxDriver`。
 - `StreamJsonDriver`：
-  - 启动命令（**钉死、由 spike 在固定 CLI 版本上验证**）：
-    `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-prompt-tool <MCP权限工具> --session-id <uuid>`
+  - 启动命令（**已由 spike 在 CLI 2.1.186 上验证，钉死**）：
+    ```
+    claude -p \
+      --input-format stream-json \
+      --output-format stream-json \
+      --verbose \
+      --include-partial-messages \
+      --replay-user-messages \
+      --permission-prompt-tool stdio \
+      --session-id <uuid>
+    ```
     - `-p/--print` 是 `--input-format`/`--include-partial-messages` 的**必需前置**（不可漏）。
-    - `--replay-user-messages`：让 CLI 把我们写入的 user 消息回显到 stdout，作为"回合已开始/写入已被吞下"的确认锚点（`TurnStarted` 的来源，M1）。driver 必须**过滤这些回显的 user 事件**，不当成模型输出渲染。
-    - `--permission-prompt-tool`：**决定权限请求到底发不发**（见 §7，C1）。取值由 spike 定，**不用 `stdio`**（stream-json 下已知会静默执行、不发请求，bug #34046）。
-    - ⚠️ **`--bare` 陷阱（M2）**：`--bare` 会跳过 `.mcp.json`/settings/Skills/CLAUDE.md 自动发现。我们整个"保留 MCP/工具链/Skills"的卖点依赖自动发现**开启**，spike 必须确认默认未启用 `--bare`，并防范未来 CLI 把它设为 `-p` 默认值。
+    - `--replay-user-messages`：让 CLI 把我们写入的 user 消息回显到 stdout，作为"回合已开始/写入已被吞下"的确认锚点（`TurnStarted` 的来源，M1）。driver 必须**过滤这些回显的 user 事件**（`isReplay: true` 字段标识），不当成模型输出渲染。
+    - `--permission-prompt-tool stdio`：**已验证在 2.1.186 上正常工作**（见 §7，C1）。当工具需要权限时，CLI 在 stdout 发出 `control_request` 事件，driver 读取后交 Engine 决策，Engine 把 `control_response{type,request_id,decision}` 写回 stdin（见 §7）。
+    - ⚠️ **`--bare` 陷阱（M2）**：`--bare` 会跳过 `.mcp.json`/settings/Skills/CLAUDE.md 自动发现。Spike 已确认默认未启用 `--bare`（32 工具/29 skills 已加载），防范未来 CLI 把它设为 `-p` 默认值。
   - 写 stdin：`{"type":"user","message":{"role":"user","content":...}}`。
-  - **🔒 关键不变量（C2，承重）**：**仅在会话空闲时写 stdin**（上一个事件是终态 `result` 或刚启动）。回合进行中到达的消息一律缓存在 Engine 队列，**待 `TurnResult` 后才写**。CLI 会把回合中途的 stdin 当成当前回合的一部分 → 永久挂起等一个永不到来的第二个 result（CC Connect engine.go:3025 实证）。
+  - **🔒 关键不变量（C2，承重，spike 已实测）**：**仅在会话空闲时写 stdin**（上一个事件是终态 `result` 或刚启动）。回合进行中到达的消息一律缓存在 Engine 队列，**待 `TurnResult` 后才写**。Spike 实测：回合中途写第二条消息不会挂起，但 CLI 会重新 session-init 并将其作为新的 turn 处理——上下文污染且行为不可预期。Engine 侧排队铁律仍为必要。
   - 读 stdout 逐行 JSON，归一化为内部事件（见 §4）。
-  - **回合结束判定（C3）**：`type:"result"` **不等于**回合结束——上下文压缩会中途发 `result` 且 `subtype:"compact"/"compaction"`。driver 必须**判 `subtype`，仅终态（success/error 等）才发 `TurnResult`**；压缩态忽略、回合继续。同时处理 `control_cancel_request`（取消）。
+  - **额外事件类型（spike 实测，原设计未列出）**：
+    - `rate_limit_event`：每次 API 调用前出现，driver 忽略（记录日志）。
+    - `system/post_turn_summary`：每个 assistant turn 后的摘要，driver 忽略（调试信息）。
+    - `system/status`：`--include-partial-messages` 时出现（`status:"requesting"` 等），driver 忽略。
+    - `system/thinking_tokens`：模型思考 token 计数，driver 忽略。
+    - `assistant` 事件：全量 assistant message（content 数组）。无论是否加 `--include-partial-messages`，每个 turn 都会出现一个完整 `assistant` 事件。**有 partial 时**同时有流式 `stream_event` deltas；**无 partial 时**只有 `assistant` 事件（无 deltas）。Driver 应以 `assistant` 事件作为 `TextDone` 的来源，以 `stream_event/content_block_delta` 作为 `TextDelta` 的来源。
+  - **回合结束判定（C3）**：`type:"result"` **不等于**回合结束——上下文压缩会中途发 `result` 且 `subtype:"compact"/"compaction"`。driver 必须**判 `subtype`，仅终态（success/error 等）才发 `TurnResult`**；压缩态忽略、回合继续。同时处理 `control_cancel_request`（取消）。`result` 的 cost 字段确切名称为 `total_cost_usd`（非 `cost_usd`）。
   - 处理 `control_request`（权限）→ 交 Engine 决策 → 写 `control_response`（§7）。
   - 优雅关闭三段式（关 stdin → 等 → SIGTERM → 等 → SIGKILL），**杀进程组**而非单进程（否则 MCP 孙进程成 100% CPU 孤儿）。超时见 §5。
   - 进程意外退出 → 退避自动重启 + `--resume <session_id>` 续接 + 重启计数。
-  - **session-id 权威（M5/N6）**：以**运行时从 `system`/`result` 事件学到的 `session_id` 为准**（`--resume` 可能派生新 id），落盘的是这个学到的 id；resume 用它，避免接到陈旧 transcript。
+  - **session-id 权威（M5/N6，spike 已实测）**：`--session-id` 传入的 UUID 被完整继承到 `system/init` 和 `result` 的 `session_id` 字段。以**运行时从 `system`/`result` 事件学到的 `session_id` 为准**（`--resume` 可能派生新 id），落盘的是这个学到的 id；resume 用它，避免接到陈旧 transcript。
 
 ### 3.3 FeishuGateway（`gateway.py`）
 - 把 `lark-oapi` 线程世界与 Engine asyncio 世界隔开。
@@ -107,16 +122,20 @@
 
 Driver 把 `claude` 的 stream-json 归一化为稳定的内部事件，Engine 据此驱动渲染。这样 **SP2 换漂亮工单卡时只改 renderer，不动 Engine**。
 
-事件类型（草案，spike 后定稿）：
-- `TurnStarted{session, user_text}` — 来源是 `--replay-user-messages` 的回显 user 事件（M1）；driver 据此发出，并**吞掉该回显**不再当模型输出。
-- `TextDelta{session, text}` / `TextDone{session, full_text}`
-- `Thinking{session, text}`
-- `ToolUse{session, name, input_summary}` / `ToolResult{session, name, status, exit_code?}`
-- `PermissionRequest{session, request_id, tool, input}`
-- `TurnResult{session, usage, cost, duration_ms}` — **仅当 `result.subtype` 为终态时发出**；`subtype:"compact"/"compaction"` 的中途 result 忽略（C3）。
+事件类型（**spike 已验证，定稿**）：
+- `TurnStarted{session, user_text}` — 来源是 `--replay-user-messages` 的回显 user 事件（`isReplay: true`，M1）；driver 据此发出，并**吞掉该回显**不再当模型输出。
+- `TextDelta{session, text}` — 来源：`stream_event / content_block_delta / text_delta`（需 `--include-partial-messages`）
+- `TextDone{session, full_text}` — 来源：`assistant` 事件的完整 content text（有无 partial 都会出现）
+- `Thinking{session, text}` — 来源：`stream_event / thinking_delta` 或 `assistant` 事件的 thinking block
+- `ToolUse{session, name, input}` — 来源：`assistant` 事件 content 中的 tool_use block
+- `ToolResult{session, tool_use_id, content, is_error}` — 来源：`user` 事件 content 中的 tool_result block（`isReplay` 为 false）
+- `PermissionRequest{session, request_id, tool_name, input, description}` — 来源：`control_request` 事件；`request_id` 用于写回 `control_response`
+- `TurnResult{session, usage, total_cost_usd, duration_ms, num_turns}` — **仅当 `result.subtype` 为终态时发出**；`subtype:"compact"/"compaction"` 的中途 result 忽略（C3）。**字段名为 `total_cost_usd`，非 `cost_usd`**。
 - `TurnCancelled{session}` — 来自 `control_cancel_request`。
 - `HealthChanged{snapshot}`
 - `SessionRecovered{session}` / `SessionCrashed{session, restarts}`
+
+**Spike 确认的额外 stream-json 事件（driver 应忽略/过滤）**：`rate_limit_event`、`system/post_turn_summary`、`system/status`、`system/thinking_tokens`。
 
 ---
 
@@ -146,18 +165,47 @@ Driver 把 `claude` 的 stream-json 归一化为稳定的内部事件，Engine �
 
 ---
 
-## 7. 权限处理（SP1 临时策略）—— ⚠️ 头号风险，spike 必须先验
+## 7. 权限处理（SP1 临时策略）—— ✅ C1 spike 已验证
 
-**核心问题（C1）**：我们整套"把权限请求转发飞书 y/n"的前提，是 Claude 真的会在 stdout 发出 `control_request`。但这**只有在加了 `--permission-prompt-tool` 时**才发生，而最显然的取值 `stdio` 在 stream-json 模式下**已知坏掉**——会**静默执行工具、根本不发请求**（bug #34046，CLI 2.1.73+）。若踩中，桥接会让 Claude **无提示执行破坏性操作**，比现状更不安全。
+**Spike 结论（CLI 2.1.186，2026-06-23）**：`--permission-prompt-tool stdio` 在 stream-json 模式下**正常工作**——工具调用需要权限时，CLI 在 stdout 发出 `control_request` 事件，文件**不会被静默执行**（`/tmp/spike_test.txt` 未被创建）。原设计文档中"bug #34046 stdio 静默执行"的警告在此版本上**未复现**。
 
-**SP1 的策略（待 spike 定锤）**：
-1. **首要 spike**（排第一，先于一切）：在**钉死的 CLI 版本**上验证——权限请求**到底发不发**、用哪个 flag、`control_request`/`control_response` 的确切字段。
-2. **路径选择**：优先用**自定义 MCP 权限工具**（官方文档支持的路径），而非 `stdio`。该 MCP 工具收到请求时回调进 Engine，Engine 把请求转**文本卡**（沿用现有 `y`/`n` 机制）发飞书。
+### control_request 事件字段（已实测）
+
+```json
+{
+  "type": "control_request",
+  "request_id": "<uuid>",
+  "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "Write",
+    "display_name": "Write",
+    "input": {"file_path": "...", "content": "..."},
+    "description": "<path or description>",
+    "permission_suggestions": [
+      {"type": "setMode", "mode": "acceptEdits", "destination": "session"},
+      {"type": "addDirectories", "directories": ["/tmp"], "destination": "session"}
+    ],
+    "decision_reason": "Path is outside allowed working directories",
+    "decision_reason_type": "workingDir",
+    "tool_use_id": "<tool_use_id>"
+  }
+}
+```
+
+### control_response 写回格式（已从 CLI 二进制提取）
+
+允许：`{"type": "control_response", "request_id": "<request_id>", "decision": "allow"}`
+拒绝：`{"type": "control_response", "request_id": "<request_id>", "decision": "deny"}`
+
+**写回必须立即**（Engine 收到 PermissionRequest 后立即写，或等用户回应后写）。stdin 关闭则 CLI 超时，以 `tool_result{is_error:true}` 自动注入"permission stream closed"错误。
+
+### SP1 策略（已定锤）
+
+1. ✅ `--permission-prompt-tool stdio` 作为正式路径（2.1.186 已验证可用）。
+2. **权限流程**：Engine 收 `PermissionRequest` → 发文字卡给飞书用户"是否允许 `<tool_name>` 操作 `<description>`（y/n）" → 用户回复 y → 写 `control_response{decision:"allow"}`；回复 n → 写 `decision:"deny"`。
 3. **超时兜底**：5 分钟无回应 → **自动 deny** + 提示，杜绝永久阻塞。
-4. **fallback 策略**（若该 CLI 版本无可靠提示路径）：用保守 `--allowedTools` 白名单 + `--permission-mode`，**白名单外一律自动 deny**——宁可拦错也不放过破坏性操作。
+4. **fallback 策略**（未来版本 stdio 若再次失效）：用保守 `--allowedTools` 白名单 + `--permission-mode`，**白名单外一律自动 deny**——宁可拦错也不放过破坏性操作。
 5. 漂亮授权按钮 + 多会话安全的回调留 SP3（见 §13）。
-
-> **结论**：引擎的权限设计在该 spike 返回前**不能定稿**。
 
 ---
 

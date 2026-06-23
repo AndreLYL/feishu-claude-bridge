@@ -1,0 +1,39 @@
+{
+  "R3_session_id_match": true,
+  "R3_passed_sid": "d424d07a-c2b1-4f82-91e1-5854cb25fb74",
+  "R3_system_sid": "d424d07a-c2b1-4f82-91e1-5854cb25fb74",
+  "R3_result_sid": "d424d07a-c2b1-4f82-91e1-5854cb25fb74",
+  "C1_file_created_silently": false,
+  "C1_control_events_count": 1,
+  "C1_event_types": [
+    "system",
+    "system",
+    "system",
+    "assistant",
+    "assistant",
+    "assistant",
+    "control_request",
+    "rate_limit_event",
+    "user",
+    "assistant"
+  ],
+  "C2_result_count": 2,
+  "C2_hung": false,
+  "C3_result_subtype": "success",
+  "M1_user_replay": {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": "Reply with exactly one word: Hello"
+    },
+    "session_id": "d424d07a-c2b1-4f82-91e1-5854cb25fb74",
+    "parent_tool_use_id": null,
+    "uuid": "dbba114c-504c-434b-8ab6-75da4360983e",
+    "timestamp": "2026-06-23T11:31:01.110Z",
+    "isReplay": true
+  },
+  "M2_model": "claude-sonnet-4-6",
+  "M2_mcp_servers": [],
+  "M2_tools_count": 32,
+  "M2_permissionMode": "default"
+}
