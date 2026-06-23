@@ -135,14 +135,31 @@ class Engine:
         await s.driver.send(text)
 
     async def _consume(self, s: _Session) -> None:
-        """Per-session event loop.  Drains pending queue on TurnResult (C2)."""
+        """Per-session event loop.  Drains pending queue on TurnResult (C2).
+
+        A failure in on_event for a single event does NOT kill the consumer —
+        we catch per-event exceptions, log them, and continue iterating.  The
+        TurnResult unlock/drain runs in a separate try so a failing on_event
+        callback can never leave the session stuck busy=True.
+        """
         try:
             async for ev in s.driver.events():
                 # Refresh the idle-timeout clock on every event
                 s.last_event_ts = time.monotonic()
-                self.on_event(ev)
+                try:
+                    self.on_event(ev)
+                except Exception as exc:
+                    logger.exception(
+                        "Session %s on_event raised on %s: %s", s.name, type(ev).__name__, exc
+                    )
+                # Always process TurnResult bookkeeping even if on_event raised
                 if isinstance(ev, events.TurnResult):
-                    await self._on_turn_result(s)
+                    try:
+                        await self._on_turn_result(s)
+                    except Exception as exc:
+                        logger.exception(
+                            "Session %s _on_turn_result failed: %s", s.name, exc
+                        )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -147,3 +147,43 @@ async def test_watchdog_does_not_fire_while_events_flowing():
     assert not cancelled_events, "TurnCancelled must not fire on clean TurnResult"
 
     await eng.stop()
+
+
+@pytest.mark.asyncio
+async def test_consumer_survives_on_event_exception():
+    """Consumer must NOT die when on_event raises; TurnResult bookkeeping must
+    still unlock the session even when on_event raises on every event."""
+
+    def always_raises(ev):
+        raise RuntimeError("intentional on_event failure")
+
+    drv = FakeDriver("main")
+    eng = Engine(
+        health=HealthModel(),
+        on_event=always_raises,
+        idle_timeout=1000,  # large enough that the watchdog never fires in this test
+    )
+    eng.add_session("main", drv, active=True)
+    await eng.start()
+
+    # First message — session becomes busy (no pending queued, so unlock stays unlocked)
+    await eng.submit("main", "first")
+    await asyncio.sleep(0.05)
+    sess = eng._sessions["main"]
+    assert drv.sends == ["first"]
+    assert sess.busy, "turn in flight"
+
+    # Feed a non-terminal event — on_event raises here; consumer must survive
+    drv.feed(events.TextDelta(session="main", text="chunk"))
+    await asyncio.sleep(0.05)
+    assert sess.busy, "still busy (no TurnResult yet) — consumer must not have died"
+
+    # Feed TurnResult — on_event raises again, but the separate bookkeeping try
+    # must still unlock the session (proving the consumer is alive AND robust).
+    drv.feed(events.TurnResult(session="main"))
+    await asyncio.sleep(0.05)
+    assert not sess.busy, "TurnResult must unlock the session even if on_event raises"
+
+    await eng.stop()
+
+    await eng.stop()
