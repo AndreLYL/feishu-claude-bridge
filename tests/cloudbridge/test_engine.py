@@ -186,8 +186,6 @@ async def test_consumer_survives_on_event_exception():
 
     await eng.stop()
 
-    await eng.stop()
-
 
 @pytest.mark.asyncio
 async def test_max_sessions_enforced():
@@ -212,4 +210,27 @@ async def test_switch_and_list_and_delete():
     assert names == {"a", "b"}
     await eng.delete_session("a")
     assert "a" not in {s["name"] for s in eng.list_sessions()}
+    await eng.stop()
+
+
+@pytest.mark.asyncio
+async def test_create_session_on_running_engine_starts_tasks():
+    """A session created on a running engine must get a live consumer (and the
+    same task set as start()), so submit→TurnResult drains and delete tears down."""
+    eng = Engine(health=HealthModel(), on_event=lambda e: None, max_sessions=3)
+    await eng.start()
+    drv = eng.create_session("dyn", lambda name: FakeDriver(name))
+
+    await eng.submit("dyn", "hello")
+    await asyncio.sleep(0.05)
+    assert drv.sends == ["hello"]
+    sess = eng._sessions["dyn"]
+    assert sess.busy, "turn in flight on the dynamically-created session"
+
+    drv.feed(events.TurnResult(session="dyn"))
+    await asyncio.sleep(0.05)
+    assert not sess.busy, "consumer of the dynamic session must process TurnResult"
+
+    await eng.delete_session("dyn")
+    assert "dyn" not in {s["name"] for s in eng.list_sessions()}
     await eng.stop()
