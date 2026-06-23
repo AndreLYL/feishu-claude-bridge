@@ -792,13 +792,35 @@ class Bridge:
 
 def main():
     parser = argparse.ArgumentParser(description="Feishu ↔ Claude Code Bridge")
-    parser.add_argument("--tmux-session", required=True, help="tmux session name")
+    parser.add_argument("--core", choices=["tmux", "stream-json"], default="tmux",
+                        help="Engine backend: 'tmux' (default, existing path) or "
+                             "'stream-json' (cloudbridge asyncio path)")
+    parser.add_argument("--tmux-session", required=False, help="tmux session name")
     parser.add_argument("--tmux-window", default=None, help="tmux window index/name (legacy mode)")
     parser.add_argument("--session-file", default=None, help="Path to Claude Code session JSONL file (legacy mode)")
     parser.add_argument("--exclude-session", action="append", default=[], help="Session UUID(s) to exclude from auto-detect (legacy mode, repeatable)")
     parser.add_argument("--max-sessions", type=int, default=None, help="Maximum number of concurrent sessions (default: 5, can also set via MAX_SESSIONS env var)")
     parser.add_argument("--session-store-path", default=None, help="Path to sessions.json file (default: ~/.feishu-claude-bridge/sessions.json, can also set via SESSION_STORE_PATH env var)")
     args = parser.parse_args()
+
+    # Preserve original requirement: --tmux-session is required when using tmux core.
+    if args.core == "tmux" and not args.tmux_session:
+        parser.error("--tmux-session is required for --core tmux")
+
+    # stream-json branch: delegate to cloudbridge asyncio engine and return before
+    # any tmux-specific code runs.
+    if args.core == "stream-json":
+        import asyncio
+        from cloudbridge import app
+        feishu_client = FeishuClient(
+            app_id=os.environ["FEISHU_APP_ID"],
+            app_secret=os.environ["FEISHU_APP_SECRET"],
+            allowed_chat_id=os.environ["ALLOWED_CHAT_ID"],
+            on_message=lambda text: None,   # placeholder; overwritten inside app.run
+            on_card_action=lambda action: None,
+        )
+        asyncio.run(app.run(feishu_client, cwd=os.getcwd()))
+        return
 
     # Read config from args/env vars with defaults
     max_sessions = args.max_sessions or int(os.environ.get("MAX_SESSIONS", "5"))
