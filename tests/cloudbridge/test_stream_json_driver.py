@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import asyncio
+import signal
 import types
 from pathlib import Path
 
@@ -12,6 +13,22 @@ from cloudbridge.stream_json_driver import StreamJsonDriver
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+_REPO_ROOT = str(Path(__file__).parent.parent.parent)
+
+
+def _fixture(tmp_path: Path, lines: list) -> Path:
+    """Write a JSONL fixture file and return its path."""
+    fix = tmp_path / "fixture.jsonl"
+    fix.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+    return fix
+
+
+def _argv(fixture_path: Path):
+    """Return (argv, env) for fakeclaude.py pointing at fixture_path."""
+    argv = [sys.executable, "scripts/fakeclaude.py"]
+    env = {**os.environ, "FAKE_FIXTURE": str(fixture_path)}
+    return argv, env
+
 
 def _driver(fixture_path, session_id="S1"):
     argv = [sys.executable, "scripts/fakeclaude.py"]
@@ -19,7 +36,7 @@ def _driver(fixture_path, session_id="S1"):
     return StreamJsonDriver(
         name="main",
         argv=argv,
-        cwd=str(Path(__file__).parent.parent.parent),  # repo root
+        cwd=_REPO_ROOT,
         session_id=session_id,
         env=env,
     )
@@ -216,3 +233,81 @@ async def test_answer_permission_writes_control_response_to_stdin():
     assert obj["type"] == "control_response"
     assert obj["request_id"] == "req-456"
     assert obj["decision"] == "deny"
+
+
+# ---------------------------------------------------------------------------
+# Test 6: close() kills the entire process group
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_close_terminates_process_group(tmp_path):
+    """close() must kill the subprocess (and its process group) completely."""
+    fix = _fixture(tmp_path, [
+        {"type": "system", "subtype": "init", "session_id": "S4"},
+        {"type": "result", "subtype": "success", "result": "x",
+         "session_id": "S4", "usage": {}, "cost_usd": 0.0},
+    ])
+    argv, env = _argv(fix)
+    d = StreamJsonDriver("main", argv, cwd=_REPO_ROOT, session_id="S4", env=env)
+    await d.start()
+    pid = d._proc.pid
+    await d.close(grace_stop=0.2, grace_term=0.5)
+    # The process must be gone
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+# ---------------------------------------------------------------------------
+# Test 7: supervise() detects a restart storm and marks driver.failed
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_restart_storm_marks_failed(tmp_path):
+    """supervise() must detect a restart storm and mark driver.failed=True.
+
+    We use an empty fixture so fakeclaude has no output to replay.  To make
+    each subprocess instance exit quickly (simulating a crash), supervise() is
+    wrapped in a task and we close each subprocess's stdin after a brief delay
+    via a helper coroutine that triggers EOF on fakeclaude's stdin.
+    """
+    fix = tmp_path / "empty.jsonl"
+    fix.write_text("")
+    argv, env = _argv(fix)
+    d = StreamJsonDriver("main", argv, cwd=_REPO_ROOT, session_id="S5", env=env)
+    crashes: list = []
+    await d.start()
+
+    async def _drain_stdin():
+        """Close each subprocess stdin quickly so fakeclaude exits (EOF crash)."""
+        while not d.failed:
+            proc = d._proc
+            if proc is not None and proc.stdin is not None:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+            await asyncio.sleep(0.02)
+
+    drain_task = asyncio.create_task(_drain_stdin())
+    try:
+        await asyncio.wait_for(
+            d.supervise(
+                on_event=lambda e: crashes.append(e),
+                max_restarts=3,
+                window_s=60,
+                backoff_base=0.01,
+                _test_max_loops=5,
+            ),
+            timeout=10.0,
+        )
+    finally:
+        drain_task.cancel()
+        try:
+            await drain_task
+        except asyncio.CancelledError:
+            pass
+
+    assert d.failed is True, "Expected driver.failed to be True after restart storm"
+    assert any(isinstance(e, events.SessionCrashed) for e in crashes), (
+        f"Expected a SessionCrashed event, got: {crashes}"
+    )

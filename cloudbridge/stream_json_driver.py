@@ -2,13 +2,13 @@
 reads stdout line-by-line, and normalizes events into the internal event model.
 
 Field-name mapping follows CLI 2.1.186 recorded fixtures (spike 2026-06-23).
-The full 3-phase graceful close + process-group kill is a clear seam left for Task 8;
-Task 6 provides a minimal close() that terminates the subprocess.
+Task 8 adds 3-phase graceful close (kills process group) + crash-supervision loop.
 """
 
 import asyncio
 import json
 import os
+import signal
 import time
 from typing import AsyncGenerator, Optional
 
@@ -47,9 +47,9 @@ class StreamJsonDriver(SessionDriver):
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._out: asyncio.Queue = asyncio.Queue()
         self._reader_task: Optional[asyncio.Task] = None
-        # Accumulate text blocks within a single assistant message
-        self._assistant_text: list[str] = []
         self._turn_start: float = 0.0
+        self.failed: bool = False
+        self._closing: bool = False
 
     # ------------------------------------------------------------------
     # Public interface (SessionDriver ABC)
@@ -74,7 +74,6 @@ class StreamJsonDriver(SessionDriver):
         The Engine (C2 invariant) guarantees this is only called when idle —
         the driver itself does NOT queue outgoing messages.
         """
-        self._assistant_text = []
         self._turn_start = time.monotonic()
         msg = {"type": "user", "message": {"role": "user", "content": text}}
         assert self._proc is not None and self._proc.stdin is not None
@@ -101,41 +100,129 @@ class StreamJsonDriver(SessionDriver):
         while True:
             yield await self._out.get()
 
-    async def close(self) -> None:
-        """Minimal teardown — close stdin, terminate, wait, kill on timeout.
+    async def close(self, grace_stop: float = 120.0, grace_term: float = 5.0) -> None:
+        """Three-phase graceful teardown targeting the entire process group.
 
-        Task 8 will extend this into the full 3-phase graceful close
-        (stdin close → wait ~120 s for Stop hooks → SIGTERM → SIGKILL) with
-        process-group targeting. This method is the seam for that extension.
+        Phase 1: close stdin and wait up to ``grace_stop`` for natural exit
+                 (allows Stop hooks like claude-mem to finish).
+        Phase 2: on timeout, SIGTERM the process group; wait up to ``grace_term``.
+        Phase 3: on timeout, SIGKILL the process group.
+
+        Robust to ``ProcessLookupError``/``PermissionError`` (process already gone).
+        The reader task is cancelled only after the process has exited so that
+        trailing events are not lost.
         """
+        self._closing = True
+        if self._proc is None:
+            return
+
+        # Phase 1: close stdin, let the process (and its Stop hooks) exit naturally
+        try:
+            if self._proc.stdin is not None:
+                self._proc.stdin.close()
+            await asyncio.wait_for(self._proc.wait(), timeout=grace_stop)
+        except asyncio.TimeoutError:
+            # Phase 2: SIGTERM the whole process group
+            self._signal_group(signal.SIGTERM)
+            try:
+                await asyncio.wait_for(self._proc.wait(), timeout=grace_term)
+            except asyncio.TimeoutError:
+                # Phase 3: SIGKILL the whole process group
+                self._signal_group(signal.SIGKILL)
+                try:
+                    await self._proc.wait()
+                except (ProcessLookupError, PermissionError):
+                    pass
+        except (ProcessLookupError, PermissionError):
+            pass
+
+        # Cancel the reader task now that the process has exited (stdout is closed)
         if self._reader_task is not None:
             self._reader_task.cancel()
             try:
                 await self._reader_task
             except (asyncio.CancelledError, Exception):
                 pass
-        if self._proc is not None:
-            await self._terminate_proc()
+
+    def _signal_group(self, sig: signal.Signals) -> None:
+        """Send ``sig`` to the entire process group, ignoring errors if already gone."""
+        try:
+            os.killpg(os.getpgid(self._proc.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    async def supervise(
+        self,
+        on_event,
+        max_restarts: int = 3,
+        window_s: float = 60,
+        backoff_base: float = 0.5,
+        _test_max_loops: Optional[int] = None,
+    ) -> None:
+        """Monitor the subprocess; auto-restart on crash with exponential backoff.
+
+        A restart-storm guard counts restarts within a sliding ``window_s``
+        window.  If the count exceeds ``max_restarts``, ``self.failed`` is set
+        to ``True``, a ``SessionCrashed`` event is emitted, and the coroutine
+        returns without relaunching.
+
+        On each recovery the subprocess is relaunched with
+        ``--resume <learned_session_id>`` appended (via :meth:`_with_resume`),
+        and a ``SessionRecovered`` event is emitted.
+
+        Parameters
+        ----------
+        on_event:        callable receiving each ``SessionRecovered`` /
+                         ``SessionCrashed`` event
+        max_restarts:    maximum number of restarts allowed within ``window_s``
+        window_s:        sliding window duration in seconds
+        backoff_base:    base sleep time; actual sleep = ``backoff_base * 2**(n-1)``
+        _test_max_loops: safety valve for tests — exit the loop after this many
+                         restart iterations even if not yet failed
+        """
+        restart_times: list[float] = []
+        loops = 0
+        while True:
+            # Wait for the current subprocess to exit
+            await self._proc.wait()
+
+            # If we initiated the close ourselves, this is not a crash
+            if self._closing:
+                return
+
+            # Sliding-window restart accounting
+            now = time.monotonic()
+            restart_times = [t for t in restart_times if now - t < window_s]
+            restart_times.append(now)
+
+            if len(restart_times) > max_restarts:
+                self.failed = True
+                on_event(events.SessionCrashed(session=self.name, restarts=len(restart_times)))
+                return
+
+            # Exponential backoff before relaunch
+            await asyncio.sleep(backoff_base * (2 ** (len(restart_times) - 1)))
+
+            # Relaunch with --resume so the session context is preserved
+            self._argv = self._with_resume(self._argv, self.learned_session_id)
+            await self.start()
+            on_event(events.SessionRecovered(session=self.name))
+
+            loops += 1
+            if _test_max_loops is not None and loops >= _test_max_loops:
+                return
+
+    @staticmethod
+    def _with_resume(argv: list[str], session_id: str) -> list[str]:
+        """Return ``argv`` with ``--resume session_id`` appended, avoiding duplicates."""
+        out = list(argv)
+        if "--resume" not in out and session_id:
+            out += ["--resume", session_id]
+        return out
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
-
-    async def _terminate_proc(self) -> None:
-        """Terminate the subprocess with a short grace period.
-
-        Full process-group kill (Task 8) replaces this with a 3-phase close.
-        """
-        try:
-            if self._proc.stdin is not None:
-                self._proc.stdin.close()
-            self._proc.terminate()
-            await asyncio.wait_for(self._proc.wait(), timeout=5)
-        except (ProcessLookupError, asyncio.TimeoutError):
-            try:
-                self._proc.kill()
-            except ProcessLookupError:
-                pass
 
     async def _read_loop(self) -> None:
         """Continuously read stdout lines and push translated events to the queue."""
@@ -205,7 +292,6 @@ class StreamJsonDriver(SessionDriver):
                     yield events.Thinking(session=self.name, text=block.get("thinking", ""))
             if text_parts:
                 full = "".join(text_parts)
-                self._assistant_text.append(full)
                 yield events.TextDone(session=self.name, full_text=full)
             return
 
