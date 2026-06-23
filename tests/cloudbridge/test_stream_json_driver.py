@@ -3,7 +3,6 @@ import json
 import os
 import sys
 import asyncio
-import signal
 import types
 from pathlib import Path
 
@@ -240,17 +239,20 @@ async def test_answer_permission_writes_control_response_to_stdin():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_close_terminates_process_group(tmp_path):
-    """close() must kill the subprocess (and its process group) completely."""
-    fix = _fixture(tmp_path, [
-        {"type": "system", "subtype": "init", "session_id": "S4"},
-        {"type": "result", "subtype": "success", "result": "x",
-         "session_id": "S4", "usage": {}, "cost_usd": 0.0},
-    ])
-    argv, env = _argv(fix)
-    d = StreamJsonDriver("main", argv, cwd=_REPO_ROOT, session_id="S4", env=env)
+async def test_close_terminates_process_group():
+    """close() must kill the subprocess process group even when the process
+    ignores stdin EOF (i.e., it does NOT exit on its own).
+
+    We spawn a tight sleep-loop process so phase-1 (close stdin + grace_stop)
+    times out, forcing close() to exercise the os.killpg SIGTERM path.
+    If the kill path were a no-op this test would hang until grace_stop elapses
+    and then fail the ProcessLookupError assertion.
+    """
+    argv = [sys.executable, "-c", "import time\nwhile True: time.sleep(0.05)"]
+    d = StreamJsonDriver("main", argv, cwd=_REPO_ROOT, session_id="S4")
     await d.start()
     pid = d._proc.pid
+    # phase-1 times out (process ignores stdin EOF), phase-2 SIGTERMs the group
     await d.close(grace_stop=0.2, grace_term=0.5)
     # The process must be gone
     with pytest.raises(ProcessLookupError):

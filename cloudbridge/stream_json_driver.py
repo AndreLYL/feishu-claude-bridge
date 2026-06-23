@@ -203,6 +203,10 @@ class StreamJsonDriver(SessionDriver):
             # Exponential backoff before relaunch
             await asyncio.sleep(backoff_base * (2 ** (len(restart_times) - 1)))
 
+            # Cancel the stale reader task before relaunching to avoid leaking it
+            if self._reader_task is not None:
+                self._reader_task.cancel()
+
             # Relaunch with --resume so the session context is preserved
             self._argv = self._with_resume(self._argv, self.learned_session_id)
             await self.start()
