@@ -4,7 +4,9 @@ from pathlib import Path
 
 class SingleInstanceLock:
     def __init__(self, path):
-        self.path = Path(path)
+        # expanduser so "~/.feishu-claude-bridge/bridge.lock" lands in $HOME,
+        # not a literal "./~/" directory in the cwd.
+        self.path = Path(path).expanduser()
         self._fh = None
 
     def acquire(self) -> bool:
