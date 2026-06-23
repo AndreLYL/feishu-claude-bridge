@@ -187,3 +187,29 @@ async def test_consumer_survives_on_event_exception():
     await eng.stop()
 
     await eng.stop()
+
+
+@pytest.mark.asyncio
+async def test_max_sessions_enforced():
+    eng = Engine(health=HealthModel(), on_event=lambda e: None, max_sessions=2)
+    await eng.start()
+    eng.add_session("a", FakeDriver("a"), active=True)
+    eng.add_session("b", FakeDriver("b"))
+    with pytest.raises(ValueError):
+        eng.create_session("c", lambda name: FakeDriver(name))
+    await eng.stop()
+
+
+@pytest.mark.asyncio
+async def test_switch_and_list_and_delete():
+    eng = Engine(health=HealthModel(), on_event=lambda e: None, max_sessions=3)
+    await eng.start()
+    eng.add_session("a", FakeDriver("a"), active=True)
+    eng.add_session("b", FakeDriver("b"))
+    eng.switch_session("b")
+    assert eng.active_session_name == "b"
+    names = {s["name"] for s in eng.list_sessions()}
+    assert names == {"a", "b"}
+    await eng.delete_session("a")
+    assert "a" not in {s["name"] for s in eng.list_sessions()}
+    await eng.stop()

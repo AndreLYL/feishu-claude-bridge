@@ -64,12 +64,14 @@ class Engine:
         queue_max: int = 20,
         idle_timeout: float = 300,
         on_backpressure=None,
+        max_sessions: int = 3,
     ):
         self.health = health
         self.on_event = on_event
         self.queue_max = queue_max
         self.idle_timeout = idle_timeout
         self.on_backpressure = on_backpressure or (lambda name, depth: None)
+        self.max_sessions = max_sessions
         self._sessions: dict[str, _Session] = {}
         self._running = False
 
@@ -122,6 +124,85 @@ class Engine:
                 return
             s.pending.append(text)
             self.health.update_session(name, queue_depth=len(s.pending))
+
+    # ------------------------------------------------------------------
+    # Multi-session management
+    # ------------------------------------------------------------------
+
+    @property
+    def active_session_name(self):
+        """Return the name of the session with active=True, or None."""
+        for s in self._sessions.values():
+            if s.active:
+                return s.name
+        return None
+
+    def create_session(self, name, driver_factory):
+        """Create and register a new session.
+
+        Raises ValueError if ``name`` already exists or ``max_sessions`` is
+        reached.  If the Engine is already running, starts the consumer task
+        (and watchdog task if idle_timeout > 0) immediately, mirroring what
+        ``start()`` does for pre-registered sessions.
+
+        Returns the newly created driver.
+        """
+        if name in self._sessions:
+            raise ValueError(f"session '{name}' already exists")
+        if len(self._sessions) >= self.max_sessions:
+            raise ValueError(f"max sessions reached ({self.max_sessions})")
+        driver = driver_factory(name)
+        self.add_session(name, driver, active=False)
+        if self._running:
+            s = self._sessions[name]
+            s.event_task = asyncio.create_task(self._consume(s))
+            if self.idle_timeout > 0:
+                s.watchdog_task = asyncio.create_task(self._watchdog(s))
+        return driver
+
+    def switch_session(self, name):
+        """Set ``name`` as the active session; deactivate all others.
+
+        Raises ValueError if ``name`` is not registered.
+        """
+        if name not in self._sessions:
+            raise ValueError(f"no such session '{name}'")
+        for s in self._sessions.values():
+            s.active = (s.name == name)
+
+    def list_sessions(self):
+        """Return a list of dicts describing all registered sessions."""
+        return [
+            {
+                "name": s.name,
+                "active": s.active,
+                "busy": s.busy,
+                "queue_depth": len(s.pending),
+            }
+            for s in self._sessions.values()
+        ]
+
+    async def delete_session(self, name):
+        """Gracefully shut down and remove a session.
+
+        Cancels the consumer task and watchdog task (matching what ``stop()``
+        does), awaits driver.close(), and removes the session from the health
+        model.  No-op if ``name`` is unknown.
+        """
+        s = self._sessions.pop(name, None)
+        if s is None:
+            return
+        for task in (s.event_task, s.watchdog_task):
+            if task is not None:
+                task.cancel()
+        for task in (s.event_task, s.watchdog_task):
+            if task is not None:
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        await s.driver.close()
+        self.health.remove_session(name)
 
     # ------------------------------------------------------------------
     # Internal helpers
