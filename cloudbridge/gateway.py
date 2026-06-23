@@ -62,6 +62,7 @@ class FeishuGateway:
         self._buf: list[str] = []
         self._msg_id: str | None = None
         self._flush_task: asyncio.Task | None = None
+        self._last_flushed: str = ""  # tracks text sent in last update_card call
 
     # ------------------------------------------------------------------
     # Inbound — called from the lark WS callback THREAD
@@ -100,6 +101,7 @@ class FeishuGateway:
     async def _on_turn_started(self) -> None:
         """Reset state, send a placeholder card, and start the flush loop."""
         self._buf = []
+        self._last_flushed = ""
         # Cancel any leftover flush task from a previous turn.
         if self._flush_task is not None:
             self._flush_task.cancel()
@@ -122,16 +124,22 @@ class FeishuGateway:
             pass
 
     async def _flush_now(self, *, final: bool) -> None:
-        """Send a card update if there is buffered text.
+        """Send a card update if there is buffered text that differs from the last flush.
 
         If ``final`` is True, clear the buffer after sending (the turn is
         over so the loop will be cancelled shortly).
+        Skips the ``update_card`` call when the buffered text is identical to
+        what was already sent, avoiding redundant identical card updates.
         """
         if not self._buf or self._msg_id is None:
             return
         text = "".join(self._buf)
+        if text == self._last_flushed:
+            # No new content since the last flush — skip the redundant API call.
+            return
         card = formatter.format_assistant_reply([text])
         await self._run(self._fs.update_card, self._msg_id, card)
+        self._last_flushed = text
         if final:
             self._buf = []
 
