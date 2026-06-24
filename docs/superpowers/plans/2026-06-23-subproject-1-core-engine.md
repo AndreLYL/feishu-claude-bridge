@@ -1741,4 +1741,34 @@ git commit -m "docs(cloudbridge): SP1 e2e 冒烟清单"
 
 ---
 
+## 追加任务（最终全分支审查后：接通 run() 真实路径）
+
+> 最终审查发现：组件全部建好且测试通过，但 `run()` 没接通 supervise 崩溃自愈、权限 y/n、多会话命令。用户决定全部接通，使 SP1 真正满足 §10 DoD。以下两任务均 TDD。
+
+### Task 15: run() 编排 —— 崩溃自愈接线 + 多会话命令 + 活跃会话路由
+
+**Files:** Modify `cloudbridge/app.py`, `cloudbridge/gateway.py`, `cloudbridge/engine.py`（仅按需新增方法）；Test `tests/cloudbridge/test_app_orchestration.py`
+
+**要点：**
+- `app.run()`：每个会话 `asyncio.create_task(driver.supervise(on_event=engine.on_event))`，让崩溃自动 `--resume` 重启在真实路径生效。
+- `driver_factory(name)`：构造 `StreamJsonDriver(name, CANONICAL_ARGV+["--session-id", uuid4], cwd, session_id=uuid4)`，供 `engine.create_session` 用。
+- 命令解析（在 app 层或一个 `cloudbridge/commands.py`）：入站文本以 `/` 开头时解析 `/new <name>` / `/switch <name>` / `/list` / `/delete <name>` → 调 `engine.create_session(name, driver_factory)`（并 `await driver.start()` + 起 supervise）/ `switch_session` / `list_sessions`（回 Feishu 文本）/ `delete_session`；非命令文本 → dispatch 到 `engine.active_session_name`（不再硬编码 `"main"`）。
+- `gateway.render`：新增 `SessionCrashed` / `SessionRecovered` 分支 → 发 `formatter.format_status_notification(...)` 状态卡。
+- **测试**（用 FakeDriver / FakeFeishu）：`/new` 创建会话且后续文本路由到它；`/switch` 改活跃；`/list` 返回；`/delete` 移除；普通文本进活跃会话；`SessionCrashed` 渲染一张卡。
+
+### Task 16: 权限 y/n 端到端（文本 + 超时；按钮留 SP3）
+
+**Files:** Modify `cloudbridge/engine.py`, `cloudbridge/gateway.py`, `cloudbridge/app.py`；Test `tests/cloudbridge/test_permission_flow.py`
+
+**要点：**
+- Engine 持有 `pending_permission: dict[session → request_id]`。`_consume` 见到 `PermissionRequest` 事件时记录 pending，并启动一个 `permission_timeout`（默认 300s，可配）的定时任务：到点未答 → 自动 `answer(deny)` + 清 pending + 通知。
+- `Engine.answer_permission(session, allow)`：调 `session.driver.answer_permission(request_id, allow)`，清 pending，取消超时任务。
+- 入站路由（app 层）：若目标会话有 pending permission 且文本是 `y`/`yes`/`n`/`no`（大小写不敏感）→ `engine.answer_permission(session, allow)`；否则照常 submit。
+- `gateway.render`：新增 `PermissionRequest` 分支 → 发 `formatter.format_permission_request(tool_name, input_summary, request_id)` 卡（纯展示，回复走文本 y/n；漂亮按钮 §7 留 SP3）。
+- **测试**：PermissionRequest 记录 pending 并渲染；随后 `y` → answer(allow) 被调、pending 清；`n` → deny；超时（小 timeout 值）→ 自动 deny；pending 期间普通非 y/n 文本不误触发（按 submit 处理或提示）。
+
+每个任务遵循 TDD（红/绿）、频繁提交，提交信息附 Co-Authored-By/Claude-Session 行。
+
+---
+
 ## Execution Handoff（见下）
