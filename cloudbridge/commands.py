@@ -1,0 +1,144 @@
+"""cloudbridge.commands — pure command parser and async inbound router.
+
+parse_command is a pure function (no I/O) so it is trivially unit-testable.
+route_inbound depends on engine + gateway but not on the real subprocess,
+so tests can pass FakeDriver / FakeFeishu without spawning anything.
+"""
+
+import asyncio
+import os
+import re
+import sys
+from typing import Optional, Tuple
+
+# formatter.py lives at the project root, which may not be on sys.path when
+# running from a subdirectory.  Add it if needed (mirrors gateway.py lines 17-19).
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+
+# ---------------------------------------------------------------------------
+# Pure parser
+# ---------------------------------------------------------------------------
+
+def parse_command(text: str) -> Optional[Tuple[str, Optional[str]]]:
+    """Parse a Feishu text message for a recognised slash command.
+
+    Returns
+    -------
+    ("new",    name)  for /new <name>
+    ("switch", name)  for /switch <name>
+    ("list",   None)  for /list
+    ("delete", name)  for /delete <name>
+    None              for anything else (including plain messages)
+    """
+    text = text.strip()
+    if not text.startswith("/"):
+        return None
+
+    m = re.match(r"^/(\w+)(?:\s+(\S+))?$", text)
+    if m is None:
+        return None
+
+    cmd = m.group(1).lower()
+    arg = m.group(2)  # may be None for /list
+
+    if cmd in ("new", "switch", "delete"):
+        if arg is None:
+            return None  # missing required argument
+        return (cmd, arg)
+    if cmd == "list":
+        return ("list", None)
+
+    return None  # unrecognised command — treat as plain text
+
+
+# ---------------------------------------------------------------------------
+# Async router
+# ---------------------------------------------------------------------------
+
+_YN_ALLOW = {"y", "yes", "是"}
+_YN_DENY = {"n", "no", "否"}
+_YN_ALL = _YN_ALLOW | _YN_DENY
+
+
+async def route_inbound(engine, gateway, driver_factory, text: str) -> None:
+    """Route an inbound Feishu message to the right engine operation.
+
+    - If there is a pending permission on the active session and the text is a
+      recognised y/n token, answer the permission and return immediately.
+    - Recognised slash command → execute engine op and optionally send a
+      plain-text reply via gateway.
+    - Anything else → submit to the active session (never hardcoded "main").
+    """
+    # --- Permission y/n intercept (checked BEFORE command parsing) ---
+    target = engine.active_session_name
+    if target and engine.has_pending_permission(target):
+        normalized = text.strip().lower()
+        if normalized in _YN_ALL:
+            allow = normalized in _YN_ALLOW
+            await engine.answer_permission(target, allow=allow)
+            reply_text = "✅ 已允许" if allow else "❌ 已拒绝"
+            await _send_text(gateway, reply_text)
+            return
+
+    parsed = parse_command(text)
+
+    if parsed is None:
+        # Plain message — dispatch to the currently active session.
+        active = engine.active_session_name
+        if active is not None:
+            await engine.submit(active, text)
+        return
+
+    cmd, name = parsed
+
+    if cmd == "new":
+        try:
+            driver = engine.create_session(name, driver_factory)
+            await driver.start()
+            asyncio.create_task(driver.supervise(on_event=engine.on_event))
+            engine.switch_session(name)
+        except ValueError as e:
+            await _send_text(gateway, f"无法创建会话「{name}」：{e}")
+            return
+        await _send_text(gateway, f"✅ 已创建并切换到会话 '{name}'")
+
+    elif cmd == "switch":
+        try:
+            engine.switch_session(name)
+            await _send_text(gateway, f"✅ 已切换到会话 '{name}'")
+        except ValueError as exc:
+            await _send_text(gateway, f"❌ {exc}")
+
+    elif cmd == "list":
+        sessions = engine.list_sessions()
+        if not sessions:
+            reply = "（无活跃会话）"
+        else:
+            lines = []
+            for s in sessions:
+                marker = "▶" if s["active"] else "  "
+                lines.append(f"{marker} {s['name']}")
+            reply = "会话列表：\n" + "\n".join(lines)
+        await _send_text(gateway, reply)
+
+    elif cmd == "delete":
+        existing = {s["name"] for s in engine.list_sessions()}
+        if name not in existing:
+            await _send_text(gateway, f"会话「{name}」不存在")
+            return
+        await engine.delete_session(name)
+        await _send_text(gateway, f"✅ 已删除会话 '{name}'")
+
+
+# ---------------------------------------------------------------------------
+# Internal helper
+# ---------------------------------------------------------------------------
+
+async def _send_text(gateway, text: str) -> None:
+    """Send a plain-text reply through the gateway's Feishu client."""
+    import formatter
+    card = formatter.format_status_notification(text, color="blue")
+    await gateway._run(gateway._fs.send_card, card)
