@@ -322,6 +322,103 @@ async def test_route_delete_removes_session():
 
 
 # ---------------------------------------------------------------------------
+# I1 — /new duplicate / max_sessions error path
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_route_new_duplicate_sends_error_and_does_not_raise():
+    """/new <name> for an already-existing name must send an error card, not raise."""
+    loop = asyncio.get_running_loop()
+    fk = FakeFeishu()
+    eng = make_engine(max_sessions=5)
+    gw = make_gateway(loop, fk, eng)
+
+    # Pre-seed a session called "work2" so the duplicate will be caught.
+    eng.add_session("work2", FakeDriver("work2"), active=True)
+    await eng.start()
+
+    created: dict[str, FakeDriver] = {}
+    factory = make_driver_factory(created)
+
+    # Must return normally (no exception escapes route_inbound).
+    await route_inbound(eng, gw, factory, "/new work2")
+    await asyncio.sleep(0.05)
+
+    # An error reply card must have been sent.
+    assert len(fk.sends) >= 1, "expected an error card to be sent"
+
+    # The factory must NOT have been called (driver was never created).
+    assert "work2" not in created, "driver should not have been created for duplicate name"
+
+    # Still only one session with that name.
+    names = [s["name"] for s in eng.list_sessions()]
+    assert names.count("work2") == 1
+
+    await eng.stop()
+
+
+@pytest.mark.asyncio
+async def test_route_new_beyond_max_sessions_sends_error_and_does_not_raise():
+    """/new when max_sessions is reached must send an error card, not raise."""
+    loop = asyncio.get_running_loop()
+    fk = FakeFeishu()
+    eng = make_engine(max_sessions=2)
+    gw = make_gateway(loop, fk, eng)
+
+    # Fill up to max_sessions.
+    eng.add_session("a", FakeDriver("a"), active=True)
+    eng.add_session("b", FakeDriver("b"), active=False)
+    await eng.start()
+
+    created: dict[str, FakeDriver] = {}
+    factory = make_driver_factory(created)
+
+    # Must return normally (no exception escapes route_inbound).
+    await route_inbound(eng, gw, factory, "/new c")
+    await asyncio.sleep(0.05)
+
+    # An error reply card must have been sent.
+    assert len(fk.sends) >= 1, "expected an error card for max_sessions exceeded"
+
+    # Session "c" must NOT have been registered.
+    names = {s["name"] for s in eng.list_sessions()}
+    assert "c" not in names
+
+    await eng.stop()
+
+
+# ---------------------------------------------------------------------------
+# I2 — /delete nonexistent session sends error, leaves others intact
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_route_delete_nonexistent_sends_error_and_leaves_sessions_intact():
+    """/delete <unknown> must send an error card and not affect existing sessions."""
+    loop = asyncio.get_running_loop()
+    fk = FakeFeishu()
+    eng = make_engine()
+    gw = make_gateway(loop, fk, eng)
+
+    eng.add_session("main", FakeDriver("main"), active=True)
+    eng.add_session("work", FakeDriver("work"), active=False)
+    await eng.start()
+
+    # Attempt to delete a session that does not exist.
+    await route_inbound(eng, gw, lambda n: FakeDriver(n), "/delete ghost")
+    await asyncio.sleep(0.05)
+
+    # An error reply card must have been sent.
+    assert len(fk.sends) >= 1, "expected an error card for nonexistent session"
+
+    # Both original sessions must remain.
+    remaining = {s["name"] for s in eng.list_sessions()}
+    assert "main" in remaining
+    assert "work" in remaining
+
+    await eng.stop()
+
+
+# ---------------------------------------------------------------------------
 # gateway.render — SessionCrashed / SessionRecovered
 # ---------------------------------------------------------------------------
 

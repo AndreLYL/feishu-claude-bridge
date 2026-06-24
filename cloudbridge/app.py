@@ -103,10 +103,8 @@ async def run(feishu_client, cwd: str) -> None:
     # Spawn crash self-healing supervisor for the "main" session.
     asyncio.create_task(drv.supervise(on_event=eng.on_event))
 
-    # SP1 simplification: FeishuClient.on_message is Callable[[str], None] (text only,
-    # no msg_id / create_time).  We wrap it with a synthetic msg_id and current time so
-    # on_inbound can exercise the InboundFilter watermark.  FeishuClient already does its
-    # own msg_id dedup, so double-delivery is not a concern on this path.
+    # FeishuClient.on_message is Callable[[str], None] (text only).  Dedup is handled
+    # inside FeishuClient itself; InboundFilter / on_inbound are bypassed on this path.
     feishu_client.on_message = lambda text: asyncio.run_coroutine_threadsafe(
         route_inbound(eng, gw, driver_factory, text), loop
     )

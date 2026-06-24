@@ -6,8 +6,16 @@ so tests can pass FakeDriver / FakeFeishu without spawning anything.
 """
 
 import asyncio
+import os
 import re
+import sys
 from typing import Optional, Tuple
+
+# formatter.py lives at the project root, which may not be on sys.path when
+# running from a subdirectory.  Add it if needed (mirrors gateway.py lines 17-19).
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 
 # ---------------------------------------------------------------------------
@@ -69,10 +77,14 @@ async def route_inbound(engine, gateway, driver_factory, text: str) -> None:
     cmd, name = parsed
 
     if cmd == "new":
-        driver = engine.create_session(name, driver_factory)
-        await driver.start()
-        asyncio.create_task(driver.supervise(on_event=engine.on_event))
-        engine.switch_session(name)
+        try:
+            driver = engine.create_session(name, driver_factory)
+            await driver.start()
+            asyncio.create_task(driver.supervise(on_event=engine.on_event))
+            engine.switch_session(name)
+        except ValueError as e:
+            await _send_text(gateway, f"无法创建会话「{name}」：{e}")
+            return
         await _send_text(gateway, f"✅ 已创建并切换到会话 '{name}'")
 
     elif cmd == "switch":
@@ -95,6 +107,10 @@ async def route_inbound(engine, gateway, driver_factory, text: str) -> None:
         await _send_text(gateway, reply)
 
     elif cmd == "delete":
+        existing = {s["name"] for s in engine.list_sessions()}
+        if name not in existing:
+            await _send_text(gateway, f"会话「{name}」不存在")
+            return
         await engine.delete_session(name)
         await _send_text(gateway, f"✅ 已删除会话 '{name}'")
 
