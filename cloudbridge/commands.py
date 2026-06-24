@@ -58,13 +58,31 @@ def parse_command(text: str) -> Optional[Tuple[str, Optional[str]]]:
 # Async router
 # ---------------------------------------------------------------------------
 
+_YN_ALLOW = {"y", "yes", "是"}
+_YN_DENY = {"n", "no", "否"}
+_YN_ALL = _YN_ALLOW | _YN_DENY
+
+
 async def route_inbound(engine, gateway, driver_factory, text: str) -> None:
     """Route an inbound Feishu message to the right engine operation.
 
+    - If there is a pending permission on the active session and the text is a
+      recognised y/n token, answer the permission and return immediately.
     - Recognised slash command → execute engine op and optionally send a
       plain-text reply via gateway.
     - Anything else → submit to the active session (never hardcoded "main").
     """
+    # --- Permission y/n intercept (checked BEFORE command parsing) ---
+    target = engine.active_session_name
+    if target and engine.has_pending_permission(target):
+        normalized = text.strip().lower()
+        if normalized in _YN_ALL:
+            allow = normalized in _YN_ALLOW
+            await engine.answer_permission(target, allow=allow)
+            reply_text = "✅ 已允许" if allow else "❌ 已拒绝"
+            await _send_text(gateway, reply_text)
+            return
+
     parsed = parse_command(text)
 
     if parsed is None:

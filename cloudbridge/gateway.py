@@ -97,6 +97,11 @@ class FeishuGateway:
             self._buf.append(ev.text)
         elif isinstance(ev, (events.TextDone, events.TurnResult)):
             await self._flush_now(final=True)
+        elif isinstance(ev, events.PermissionRequest):
+            # Render a permission-request card (display only — user replies with y/n text)
+            input_summary = str(ev.input)
+            card = formatter.format_permission_request(ev.tool_name, input_summary, ev.request_id)
+            await self._run(self._fs.send_card, card)
         elif isinstance(ev, events.SessionCrashed):
             card = formatter.format_status_notification(
                 f"⚠️ 会话 '{ev.session}' 已崩溃（重启次数: {ev.restarts}）",

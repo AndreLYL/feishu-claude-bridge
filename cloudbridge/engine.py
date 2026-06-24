@@ -65,6 +65,7 @@ class Engine:
         idle_timeout: float = 300,
         on_backpressure=None,
         max_sessions: int = 3,
+        permission_timeout: float = 300.0,
     ):
         self.health = health
         self.on_event = on_event
@@ -72,8 +73,13 @@ class Engine:
         self.idle_timeout = idle_timeout
         self.on_backpressure = on_backpressure or (lambda name, depth: None)
         self.max_sessions = max_sessions
+        self.permission_timeout = permission_timeout
         self._sessions: dict[str, _Session] = {}
         self._running = False
+        # Permission tracking: session_name → request_id
+        self._pending_perm: dict[str, str] = {}
+        # Permission timeout tasks: session_name → asyncio.Task
+        self._perm_timers: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -96,6 +102,16 @@ class Engine:
     async def stop(self) -> None:
         """Cancel all per-session background tasks."""
         self._running = False
+        # Cancel permission timeout timers
+        for task in list(self._perm_timers.values()):
+            task.cancel()
+        for task in list(self._perm_timers.values()):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._perm_timers.clear()
+        self._pending_perm.clear()
         for s in self._sessions.values():
             for task in (s.event_task, s.watchdog_task):
                 if task is not None:
@@ -192,6 +208,15 @@ class Engine:
         s = self._sessions.pop(name, None)
         if s is None:
             return
+        # Cancel and remove any pending permission timer for this session
+        timer = self._perm_timers.pop(name, None)
+        if timer is not None:
+            timer.cancel()
+            try:
+                await timer
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._pending_perm.pop(name, None)
         for task in (s.event_task, s.watchdog_task):
             if task is not None:
                 task.cancel()
@@ -203,6 +228,59 @@ class Engine:
                     pass
         await s.driver.close()
         self.health.remove_session(name)
+
+    # ------------------------------------------------------------------
+    # Permission API
+    # ------------------------------------------------------------------
+
+    def has_pending_permission(self, session_name: str) -> bool:
+        """Return True if ``session_name`` has a pending permission request."""
+        return session_name in self._pending_perm
+
+    async def answer_permission(self, session_name: str, allow: bool) -> bool:
+        """Answer a pending permission request.
+
+        Looks up the pending ``request_id`` for ``session_name``, cancels the
+        timeout task, calls ``driver.answer_permission(request_id, allow)``, and
+        returns True.  Returns False if there was no pending request.
+        """
+        request_id = self._pending_perm.pop(session_name, None)
+        if request_id is None:
+            return False
+        # Cancel and discard the timeout task
+        timer = self._perm_timers.pop(session_name, None)
+        if timer is not None:
+            timer.cancel()
+            try:
+                await timer
+            except (asyncio.CancelledError, Exception):
+                pass
+        s = self._sessions.get(session_name)
+        if s is not None:
+            await s.driver.answer_permission(request_id, allow)
+        return True
+
+    async def _perm_timeout(self, s: _Session, request_id: str) -> None:
+        """Auto-deny a permission request after ``permission_timeout`` seconds."""
+        try:
+            await asyncio.sleep(self.permission_timeout)
+        except asyncio.CancelledError:
+            return
+        # Only act if this request_id is still the one pending (guard against race)
+        if self._pending_perm.get(s.name) == request_id:
+            logger.warning(
+                "Session %s permission request %s timed out — auto-denying",
+                s.name, request_id,
+            )
+            await self.answer_permission(s.name, allow=False)
+            # Notify downstream (minimal notice — reuse TurnCancelled)
+            try:
+                self.on_event(events.TurnCancelled(session=s.name))
+            except Exception as exc:
+                logger.exception(
+                    "Session %s on_event raised on permission timeout notice: %s",
+                    s.name, exc,
+                )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -227,6 +305,17 @@ class Engine:
             async for ev in s.driver.events():
                 # Refresh the idle-timeout clock on every event
                 s.last_event_ts = time.monotonic()
+                # Handle PermissionRequest: record pending and start timeout task
+                if isinstance(ev, events.PermissionRequest):
+                    self._pending_perm[s.name] = ev.request_id
+                    # Cancel any previous timer for this session (shouldn't happen
+                    # in practice, but guard for safety)
+                    old = self._perm_timers.pop(s.name, None)
+                    if old is not None:
+                        old.cancel()
+                    self._perm_timers[s.name] = asyncio.create_task(
+                        self._perm_timeout(s, ev.request_id)
+                    )
                 try:
                     self.on_event(ev)
                 except Exception as exc:
