@@ -97,6 +97,18 @@ class FeishuGateway:
             self._buf.append(ev.text)
         elif isinstance(ev, (events.TextDone, events.TurnResult)):
             await self._flush_now(final=True)
+        elif isinstance(ev, events.SessionCrashed):
+            card = formatter.format_status_notification(
+                f"⚠️ 会话 '{ev.session}' 已崩溃（重启次数: {ev.restarts}）",
+                color="red",
+            )
+            await self._run(self._fs.send_card, card)
+        elif isinstance(ev, events.SessionRecovered):
+            card = formatter.format_status_notification(
+                f"✅ 会话 '{ev.session}' 已恢复",
+                color="green",
+            )
+            await self._run(self._fs.send_card, card)
 
     async def _on_turn_started(self) -> None:
         """Reset state, send a placeholder card, and start the flush loop."""

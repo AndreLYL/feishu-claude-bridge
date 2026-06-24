@@ -9,6 +9,7 @@ import asyncio
 import time
 import uuid
 
+from cloudbridge.commands import route_inbound
 from cloudbridge.engine import Engine
 from cloudbridge.gateway import FeishuGateway
 from cloudbridge.health import HealthModel
@@ -76,7 +77,8 @@ async def run(feishu_client, cwd: str) -> None:
     """Real entry point: called by bridge.py --core stream-json.
 
     Acquires a single-instance lock, assembles the bridge components, spawns
-    one StreamJsonDriver, and blocks until interrupted.
+    one StreamJsonDriver for the "main" session with crash self-healing via
+    supervise, and blocks until interrupted.
     """
     lock = SingleInstanceLock("~/.feishu-claude-bridge/bridge.lock")
     if not lock.acquire():
@@ -85,19 +87,28 @@ async def run(feishu_client, cwd: str) -> None:
     loop = asyncio.get_running_loop()
     eng, gw, health = build(loop, feishu_client, cwd, start_ts=time.time())
 
-    sid = str(uuid.uuid4())
+    # driver_factory: constructs a fresh StreamJsonDriver for a given session name.
+    # Each session gets its own UUID so --session-id is unique per process.
+    def driver_factory(name: str) -> StreamJsonDriver:
+        sid = uuid.uuid4().hex
+        return StreamJsonDriver(name, _argv_for(sid), cwd=cwd, session_id=sid)
+
+    # Create and start the initial "main" session.
+    sid = uuid.uuid4().hex
     drv = StreamJsonDriver("main", _argv_for(sid), cwd=cwd, session_id=sid)
     await drv.start()
     eng.add_session("main", drv, active=True)
     await eng.start()
 
+    # Spawn crash self-healing supervisor for the "main" session.
+    asyncio.create_task(drv.supervise(on_event=eng.on_event))
+
     # SP1 simplification: FeishuClient.on_message is Callable[[str], None] (text only,
     # no msg_id / create_time).  We wrap it with a synthetic msg_id and current time so
     # on_inbound can exercise the InboundFilter watermark.  FeishuClient already does its
     # own msg_id dedup, so double-delivery is not a concern on this path.
-    import uuid as _uuid
-    feishu_client.on_message = lambda text: gw.on_inbound(
-        _uuid.uuid4().hex, int(time.time() * 1000), text
+    feishu_client.on_message = lambda text: asyncio.run_coroutine_threadsafe(
+        route_inbound(eng, gw, driver_factory, text), loop
     )
 
     # Block until cancelled / interrupted.
