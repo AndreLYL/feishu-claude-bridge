@@ -247,9 +247,12 @@ class Engine:
         request_id = self._pending_perm.pop(session_name, None)
         if request_id is None:
             return False
-        # Cancel and discard the timeout task
+        # Cancel and discard the timeout task. Guard against self-cancel: when
+        # called FROM _perm_timeout, `timer` is the currently-running task —
+        # cancelling/awaiting ourselves would raise a self-CancelledError (only
+        # masked today by the broad except). Skip it; the timer is finishing.
         timer = self._perm_timers.pop(session_name, None)
-        if timer is not None:
+        if timer is not None and timer is not asyncio.current_task():
             timer.cancel()
             try:
                 await timer

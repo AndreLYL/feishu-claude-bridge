@@ -251,6 +251,12 @@ async def test_permission_timeout_auto_denies():
         f"Timeout must deny (False), got {drv.perm_calls}"
     )
     assert drv.perm_calls[-1][0] == "req-timeout"
+    # Regression guard (self-cancel/self-await fix): the timeout path must deny
+    # EXACTLY ONCE and leave the engine idempotent — answering again is a no-op.
+    assert len(drv.perm_calls) == 1, (
+        f"timeout must deny exactly once (no self-cancel double-call), got {drv.perm_calls}"
+    )
+    assert await eng.answer_permission("s1", allow=True) is False
 
     await eng.stop()
     await gw.aclose()
