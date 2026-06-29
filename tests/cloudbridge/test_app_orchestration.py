@@ -454,3 +454,47 @@ async def test_render_session_recovered_sends_card():
     assert len(fk.sends) == 1, (
         f"Expected 1 send_card for SessionRecovered, got {len(fk.sends)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# make_inbound_handler — watermark gate THEN full route_inbound (DoD #2)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_inbound_handler_gates_on_watermark_then_routes():
+    """The real-path inbound handler must time-gate via InboundFilter BEFORE
+    dispatching to route_inbound.  This closes the DoD #2 watermark gap: after a
+    restart, Feishu's WS long-connection can re-deliver messages older than the
+    process start, and they must be dropped (not replayed into the engine)."""
+    from cloudbridge import app
+
+    loop = asyncio.get_running_loop()
+    fk = FakeFeishu()
+    eng = make_engine()
+    # Realistic watermark: start_ts=1000s, grace 2s → watermark = 998s.
+    gw = FeishuGateway(
+        loop, eng.submit, fk, InboundFilter(start_ts=1000.0), flush_ms=10_000
+    )
+
+    drv = FakeDriver("main")
+    eng.add_session("main", drv, active=True)
+    await eng.start()
+
+    handler = app.make_inbound_handler(eng, gw, lambda n: FakeDriver(n), loop)
+
+    # Fresh message (1005s > 998s watermark) → routed to the active session.
+    handler("hello", "m-fresh", 1_005_000)
+    await asyncio.sleep(0.05)
+    assert drv.sends == ["hello"], "fresh message must reach the active session"
+
+    # Old replayed message (900s < 998s watermark) → dropped, never routed.
+    handler("old-replay", "m-old", 900_000)
+    await asyncio.sleep(0.05)
+    assert drv.sends == ["hello"], "pre-start message must be dropped (watermark)"
+
+    # Duplicate msg_id (even though fresh) → dropped by InboundFilter dedup.
+    handler("hello-again", "m-fresh", 1_006_000)
+    await asyncio.sleep(0.05)
+    assert drv.sends == ["hello"], "duplicate msg_id must be deduplicated"
+
+    await eng.stop()

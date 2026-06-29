@@ -313,8 +313,12 @@ class Bridge:
         if active_id and not self.active_session_id:
             self.active_session_id = active_id
 
-    def _handle_feishu_message(self, text: str):
-        """Handle text message from Feishu."""
+    def _handle_feishu_message(self, text: str, msg_id: str = None, create_time_ms: int = None):
+        """Handle text message from Feishu.
+
+        ``msg_id`` / ``create_time_ms`` are supplied by FeishuClient for the
+        stream-json path's watermark filter; the tmux path ignores them.
+        """
         try:
             logger.info(f"Feishu → bridge: {text[:80]}")
 
@@ -816,7 +820,7 @@ def main():
             app_id=os.environ["FEISHU_APP_ID"],
             app_secret=os.environ["FEISHU_APP_SECRET"],
             allowed_chat_id=os.environ["ALLOWED_CHAT_ID"],
-            on_message=lambda text: None,   # placeholder; overwritten inside app.run
+            on_message=lambda *a: None,   # placeholder; overwritten inside app.run
             on_card_action=lambda action: None,
         )
         asyncio.run(app.run(feishu_client, cwd=os.getcwd()))

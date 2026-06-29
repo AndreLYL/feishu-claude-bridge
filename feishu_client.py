@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Callable, Optional
@@ -24,7 +25,7 @@ class FeishuClient:
         app_id: str,
         app_secret: str,
         allowed_chat_id: str,
-        on_message: Callable[[str], None],
+        on_message: Callable[[str, str, int], None],
         on_card_action: Callable[[dict], None],
         on_image: Optional[Callable[[str], None]] = None,
         image_dir: Optional[str] = None,
@@ -135,17 +136,24 @@ class FeishuClient:
         if len(self._seen_msg_ids) > self._seen_msg_ids_max:
             self._seen_msg_ids.popitem(last=False)
 
+        # Feishu create_time is an ms-epoch string; fall back to now if absent so a
+        # missing timestamp is treated as fresh (never silently dropped downstream).
+        try:
+            create_time_ms = int(msg.create_time)
+        except (TypeError, ValueError):
+            create_time_ms = int(time.time() * 1000)
+
         # Extract text content
         if msg.message_type == "text":
             content = json.loads(msg.content)
             text = content.get("text", "").strip()
             if text:
-                self.on_message(text)
+                self.on_message(text, msg_id, create_time_ms)
         elif msg.message_type == "post":
             content = json.loads(msg.content)
             text = self._extract_post_text(content)
             if text:
-                self.on_message(text)
+                self.on_message(text, msg_id, create_time_ms)
         elif msg.message_type == "image" and self.on_image:
             content = json.loads(msg.content)
             image_key = content.get("image_key", "")

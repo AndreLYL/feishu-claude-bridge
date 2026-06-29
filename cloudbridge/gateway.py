@@ -68,6 +68,21 @@ class FeishuGateway:
     # Inbound — called from the lark WS callback THREAD
     # ------------------------------------------------------------------
 
+    def accept_inbound(self, msg_id: str, create_time_ms: int) -> bool:
+        """Single watermark + dedup gate for inbound messages.
+
+        Returns True if the message should be processed.  This is the one place
+        the InboundFilter is consulted, shared by both ``on_inbound`` (simple
+        submit-to-main path) and the real ``app.make_inbound_handler`` router.
+
+        Thread-safety: touches the filter's unsynchronized ``_seen`` map, so it
+        MUST be driven from a single inbound thread.  In ``app.run`` that holds —
+        ``make_inbound_handler`` is the sole inbound entry (the lark WS delivers
+        on one thread); do NOT additionally wire ``on_inbound`` to the same
+        gateway, or the two entries would race on ``_seen``.
+        """
+        return self._filter.accept(msg_id, create_time_ms)
+
     def on_inbound(self, msg_id: str, create_time_ms: int, text: str) -> None:
         """Accept a raw inbound message from the lark WS thread.
 
@@ -75,7 +90,7 @@ class FeishuGateway:
         coroutine into the event-loop via run_coroutine_threadsafe so the
         engine sees it on the correct thread.
         """
-        if not self._filter.accept(msg_id, create_time_ms):
+        if not self.accept_inbound(msg_id, create_time_ms):
             return
         try:
             asyncio.run_coroutine_threadsafe(

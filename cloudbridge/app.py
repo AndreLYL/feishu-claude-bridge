@@ -34,6 +34,27 @@ def _argv_for(session_id: str) -> list:
     return CANONICAL_ARGV + ["--session-id", session_id]
 
 
+def make_inbound_handler(eng, gw, driver_factory, loop):
+    """Build the lark ``on_message`` callback for the real run() path.
+
+    The callback runs on the lark WS thread.  It applies the watermark + dedup
+    gate (``gw.accept_inbound``) BEFORE dispatching to ``route_inbound`` — so the
+    full command/permission router sits behind the same InboundFilter that
+    ``gw.on_inbound`` uses.  This closes the DoD #2 replay gap: after a restart,
+    Feishu's WS can re-deliver messages older than the process start; those are
+    dropped here instead of being replayed into the engine.
+    """
+
+    def _on_message(text: str, msg_id: str, create_time_ms: int) -> None:
+        if not gw.accept_inbound(msg_id, create_time_ms):
+            return
+        asyncio.run_coroutine_threadsafe(
+            route_inbound(eng, gw, driver_factory, text), loop
+        )
+
+    return _on_message
+
+
 def build(loop, feishu_client, cwd, start_ts, max_sessions=3):
     """Assemble HealthModel, Engine, FeishuGateway and wire them together.
 
@@ -103,11 +124,10 @@ async def run(feishu_client, cwd: str) -> None:
     # Spawn crash self-healing supervisor for the "main" session.
     asyncio.create_task(drv.supervise(on_event=eng.on_event))
 
-    # FeishuClient.on_message is Callable[[str], None] (text only).  Dedup is handled
-    # inside FeishuClient itself; InboundFilter / on_inbound are bypassed on this path.
-    feishu_client.on_message = lambda text: asyncio.run_coroutine_threadsafe(
-        route_inbound(eng, gw, driver_factory, text), loop
-    )
+    # FeishuClient.on_message is Callable[[str, str, int], None] = (text, msg_id,
+    # create_time_ms).  The handler applies the InboundFilter watermark/dedup gate
+    # before routing, so restarts don't replay Feishu's re-delivered old messages.
+    feishu_client.on_message = make_inbound_handler(eng, gw, driver_factory, loop)
 
     # Block until cancelled / interrupted.
     await asyncio.Event().wait()

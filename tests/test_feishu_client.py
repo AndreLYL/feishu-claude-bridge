@@ -13,7 +13,7 @@ def _make_client():
                 app_id="test_id",
                 app_secret="test_secret",
                 allowed_chat_id="test_chat",
-                on_message=lambda t: None,
+                on_message=lambda *a: None,
                 on_card_action=lambda v: None,
             )
     return client
